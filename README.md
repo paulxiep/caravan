@@ -18,22 +18,22 @@ This repo is **scoping-stage**: thesis + evidence catalogs, no implementation ye
 
 ## Scoping documents
 
-- [Thesis](docs/thesis.md) - primary scoping doc. Read first.
-- [IR data model + yaml schema + pipeline](docs/ir.md) - typed IR sketch, the yaml the user writes, compiler phase signatures, RPC env-var contract, mapping unambiguity audit.
-- [HCL primer + worked emit sample](docs/hcl_walkthrough.md) - learn HCL syntax through a fully annotated `staging-fargate` emit + `dev-local` compose + `hybrid-dev` delta.
-- [Considerations](docs/considerations.md) - ambiguity catalogue + dispositions (resolved 2026-05-17 for items A-K).
-- [Abstraction v4 derivation](docs/supeux_abstraction_v4.md) - current long-form derivation that produced the thesis (four-language re-derivation: primitive shapes, yaml schema, IaC choice, gotchas). Supersedes v3.
-- [AWS service groups](docs/aws_service_groups.md) - cost / latency / scale catalog of AWS services.
-- [GCP service groups](docs/gcp_service_groups.md) - GCP companion to the AWS catalog (cost / latency / scale, GCP-native role groupings).
-- [Azure service groups](docs/azure_service_groups.md) - Azure companion to the AWS catalog (cost / latency / scale, Azure-native role groupings including Service Bus, Cosmos DB, Microsoft Fabric, Logic Apps).
-- [Cloud providers](docs/cloud_providers.md) - cross-provider primitive mapping (AWS / GCP / Azure) and divergences from the AWS baseline.
-- Python ecosystem evidence: [mapping AWS→Python](docs/mapping_aws_to_python.md) · [mapping Python→AWS](docs/mapping_python_to_aws.md) · [Python API diffs](docs/python_api_diffs.md).
-- Rust ecosystem evidence: [mapping AWS→Rust](docs/mapping_aws_to_rust.md) · [mapping Rust→AWS](docs/mapping_rust_to_aws.md) · [Rust API diffs](docs/rust_api_diffs.md).
-- TypeScript ecosystem evidence: [mapping AWS→TypeScript](docs/mapping_aws_to_typescript.md) · [mapping TypeScript→AWS](docs/mapping_typescript_to_aws.md) · [TypeScript API diffs](docs/typescript_api_diffs.md).
-- Go ecosystem evidence: [mapping AWS→Go](docs/mapping_aws_to_go.md) · [mapping Go→AWS](docs/mapping_go_to_aws.md) · [Go API diffs](docs/go_api_diffs.md).
-- [Abstraction v3](docs/supeux_abstraction_v3.md) - prior long-form derivation, Python + Rust + TypeScript. Historical record.
-- [Abstraction v2](docs/supeux_abstraction_v2.md) - prior long-form derivation, Python + Rust only. Historical record.
-- [Abstraction v1](docs/supeux_abstraction_v1.md) - prior framing built around a Python SDK. Historical record.
+- [Thesis](https://github.com/paulxiep/supeux/blob/main/docs/thesis.md) - primary scoping doc. Read first.
+- [IR data model + yaml schema + pipeline](https://github.com/paulxiep/supeux/blob/main/docs/ir.md) - typed IR sketch, the yaml the user writes, compiler phase signatures, RPC env-var contract, mapping unambiguity audit.
+- [HCL primer + worked emit sample](https://github.com/paulxiep/supeux/blob/main/docs/hcl_walkthrough.md) - learn HCL syntax through a fully annotated `staging-fargate` emit + `dev-local` compose + `hybrid-dev` delta.
+- [Considerations](https://github.com/paulxiep/supeux/blob/main/docs/considerations.md) - ambiguity catalogue + dispositions (resolved 2026-05-17 for items A-K).
+- [Abstraction v4 derivation](https://github.com/paulxiep/supeux/blob/main/docs/supeux_abstraction_v4.md) - current long-form derivation that produced the thesis (four-language re-derivation: primitive shapes, yaml schema, IaC choice, gotchas). Supersedes v3.
+- [AWS service groups](https://github.com/paulxiep/supeux/blob/main/docs/aws_service_groups.md) - cost / latency / scale catalog of AWS services.
+- [GCP service groups](https://github.com/paulxiep/supeux/blob/main/docs/gcp_service_groups.md) - GCP companion to the AWS catalog (cost / latency / scale, GCP-native role groupings).
+- [Azure service groups](https://github.com/paulxiep/supeux/blob/main/docs/azure_service_groups.md) - Azure companion to the AWS catalog (cost / latency / scale, Azure-native role groupings including Service Bus, Cosmos DB, Microsoft Fabric, Logic Apps).
+- [Cloud providers](https://github.com/paulxiep/supeux/blob/main/docs/cloud_providers.md) - cross-provider primitive mapping (AWS / GCP / Azure) and divergences from the AWS baseline.
+- Python ecosystem evidence: [mapping AWS→Python](https://github.com/paulxiep/supeux/blob/main/docs/mapping_aws_to_python.md) · [mapping Python→AWS](https://github.com/paulxiep/supeux/blob/main/docs/mapping_python_to_aws.md) · [Python API diffs](https://github.com/paulxiep/supeux/blob/main/docs/python_api_diffs.md).
+- Rust ecosystem evidence: [mapping AWS→Rust](https://github.com/paulxiep/supeux/blob/main/docs/mapping_aws_to_rust.md) · [mapping Rust→AWS](https://github.com/paulxiep/supeux/blob/main/docs/mapping_rust_to_aws.md) · [Rust API diffs](https://github.com/paulxiep/supeux/blob/main/docs/rust_api_diffs.md).
+- TypeScript ecosystem evidence: [mapping AWS→TypeScript](https://github.com/paulxiep/supeux/blob/main/docs/mapping_aws_to_typescript.md) · [mapping TypeScript→AWS](https://github.com/paulxiep/supeux/blob/main/docs/mapping_typescript_to_aws.md) · [TypeScript API diffs](https://github.com/paulxiep/supeux/blob/main/docs/typescript_api_diffs.md).
+- Go ecosystem evidence: [mapping AWS→Go](https://github.com/paulxiep/supeux/blob/main/docs/mapping_aws_to_go.md) · [mapping Go→AWS](https://github.com/paulxiep/supeux/blob/main/docs/mapping_go_to_aws.md) · [Go API diffs](https://github.com/paulxiep/supeux/blob/main/docs/go_api_diffs.md).
+- [Abstraction v3](https://github.com/paulxiep/supeux/blob/main/docs/supeux_abstraction_v3.md) - prior long-form derivation, Python + Rust + TypeScript. Historical record.
+- [Abstraction v2](https://github.com/paulxiep/supeux/blob/main/docs/supeux_abstraction_v2.md) - prior long-form derivation, Python + Rust only. Historical record.
+- [Abstraction v1](https://github.com/paulxiep/supeux/blob/main/docs/supeux_abstraction_v1.md) - prior framing built around a Python SDK. Historical record.
 
 ## Status
 
