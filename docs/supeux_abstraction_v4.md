@@ -30,15 +30,15 @@ supeux, fully realized, is a **containers-first deploy tool** that lets a team w
 
 ### What the user writes
 
-- **Containers**, one per service. Inside, user code uses the language's normal AWS SDK / driver libraries with `endpoint` / DSN env-var-driven configuration. Lambda-shaped services wrap themselves with the language's idiomatic adapter (`lambda_http` in Rust, `Mangum` in Python, `hono/aws-lambda` / `serverless-http` / `@fastify/aws-lambda` in TS, `aws-lambda-go-api-proxy` in Go) — that wrapper is user code, not supeux code.
-- **One `supeux.yaml`** declaring services, resources, triggers, secrets, targets.
+- **Containers**, one per bundle. Inside, user code uses the language's normal AWS SDK / driver libraries with `endpoint` / DSN env-var-driven configuration. Lambda-shaped modules wrap themselves with the language's idiomatic adapter (`lambda_http` in Rust, `Mangum` in Python, `hono/aws-lambda` / `serverless-http` / `@fastify/aws-lambda` in TS, `aws-lambda-go-api-proxy` in Go) — that wrapper is user code, not supeux code.
+- **One `supeux.yaml`** declaring modules, resources, bundles, secrets, targets.
 - **Optional**: hand-written `.tf` files alongside generated ones, for AWS features supeux hasn't wrapped. supeux never overwrites them.
 
 ### What supeux generates
 
 | Target runtime | Generated artifacts |
 |---|---|
-| `docker-compose` (local) | `docker-compose.generated.yaml` with the user's service containers + OSS dependency containers (postgres, minio, elasticmq, dynamodb-local, redis, opensearch, localstack-SNS, etc.) wired together. |
+| `docker-compose` (local) | `docker-compose.generated.yaml` with the user's bundle containers + OSS dependency containers (postgres, minio, elasticmq, dynamodb-local, redis, opensearch, localstack-SNS, etc.) wired together. |
 | `aws` (cloud) | `infra/<target>/*.tf` covering compute (Fargate/App Runner/Lambda container-image, per `shape:`), networking (VPC/subnets/SGs auto-derived from `uses:` graph), stateful resources, IAM (auto-derived from `uses:`), triggers (Function URLs, ALB, SQS event source mappings, EventBridge Scheduler rules, S3 events), observability (CloudWatch log groups; X-Ray sampling), secrets (SSM + Secrets Manager + KMS — never plaintext). |
 | CI | `.github/workflows/deploy-<target>.yml` with build / test / deploy stages + PR-preview support. Users edit by hand after generation. |
 
@@ -53,17 +53,17 @@ The flow is **two-step on purpose**: emission produces an artifact on disk that 
 - `supeux diff --target=<name>` — preview changes (`tofu plan` against the emitted spec, pretty-printed). Useful gate between `compile` and `up`.
 - `supeux spec [--json|--graph]` — inspect IR (phases 1–3 only) as text, JSON, or graphviz. **Distinct from `supeux compile`**: `spec` is a noun-shaped read-only inspector that dumps the cloud-agnostic IR; `compile` is the verb that produces the per-target HCL/compose projection on disk.
 - `supeux check` — phases 1–2 only: yaml syntax, cross-refs, env-var usage. Fast; no cloud calls; no emission.
-- `supeux logs <service> [--target=<name>] [--follow]` — stream logs through one CLI
-- `supeux exec <service> [--target=<name>] -- <cmd>` — run a command inside the running container
+- `supeux logs <module> [--target=<name>] [--follow]` — stream logs through one CLI (the CLI accepts a module name and resolves to its bundle's deployed process)
+- `supeux exec <module> [--target=<name>] -- <cmd>` — run a command inside the running container hosting the named module
 - `supeux preview --pr=<n>` — spin per-PR target stack from a target template (still emits → reviews → applies under the hood)
 - `supeux generate workflow` — refresh CI files from current yaml
 
 ### End-state primitive coverage
 
-- **All 8 primitives** generally available: `service`, `bucket`, `queue`, `topic`, `kv`, `db.sql`, `secret`, `static_site`.
-- **All 3 `service` shapes** supported: `long-running` (Fargate / App Runner), `function` (Lambda container-image), `batch` (one-off task on Fargate / AWS Batch).
-- **All 5 trigger types** supported: `http`, `queue`, `topic`, `cron`, `bucket-event`.
-- **~20 cloud-only resource types** declared via `cloud_only: type: <name>` syntax.
+- **All 9 primitives** generally available: `module`, `bucket`, `queue`, `topic`, `kv`, `db.sql`, `secret`, `static_site`, `cloud_only`. (Plus `bundle` as packaging arithmetic over modules.)
+- **All 3 `bundle` shapes** supported: `long_running` (Fargate / App Runner), `function` (Lambda container-image), `batch` (one-off task on Fargate / AWS Batch). The shape lives on the bundle, not the module — multiple modules in one bundle share one shape.
+- **All 5 trigger types** supported: `http`, `queue`, `topic`, `cron`, `bucket-event` — all attached to modules via their `triggers:` list.
+- **~20 cloud-only resource types** declared via `resources: <name>: { type: cloud_only, cloud_only: { type: <name>, ... } }` syntax.
 
 ### End-state language coverage
 
@@ -80,7 +80,7 @@ The flow is **two-step on purpose**: emission produces an artifact on disk that 
 
 ### End-state observability (no extra wiring)
 
-- Services emit logs to stdout in JSON; supeux wires runtime collection (awslogs driver / Lambda automatic / docker logs).
+- Modules emit logs to stdout in JSON; supeux wires runtime collection (awslogs driver / Lambda automatic / docker logs).
 - OTel traces on by default; `OTEL_EXPORTER_OTLP_ENDPOINT` env var points at ADOT (cloud) or Jaeger (local).
 - Metrics via CloudWatch EMF in logs for basic counter/timer cases; Prometheus sidecar opt-in for advanced.
 
@@ -92,7 +92,7 @@ The flow is **two-step on purpose**: emission produces an artifact on disk that 
 
 ### Currently out of scope (revisitable as demand justifies)
 
-- **Serverless-framework UX bias.** Lambda is one *shape* of `service`, not the gravity center.
+- **Serverless-framework UX bias.** Lambda is one *shape* of `bundle` (the unit a module deploys as), not the gravity center.
 - **Deploy-time SDK.** yaml is the source of truth — no `import supeux` driving deploys.
 - **Per-language adapter libraries.** Community libraries (rig / litellm / Vercel AI SDK / langchaingo / eino / etc.) cover most Tier 1 hard pairs today. `supeux-adapters-*` may ship for proven gaps; not currently a priority.
 - **Live debugger / hot-reload proxy.** Containers + IDE debugger + volume-mount-for-source already work.
@@ -114,11 +114,13 @@ The IR must name:
 - Edge concerns the user may need (static asset hosting).
 - A way to flag resources that exist only in cloud (Bedrock, CloudFront, etc.).
 
-That yields **eight primitives**, derived purely from the requirement. **Go evidence does not move this count** — `aws-sdk-go-v2/service/s3` → `bucket`; `aws-sdk-go-v2/service/sqs` → `queue`; `pgx`/`gorm` → `db.sql`; `aws-sdk-go-v2/service/dynamodb` → `kv`; etc. Same shape across all four first-class languages. The primitive set is language-agnostic by construction.
+That yields **eight primitives** (nine with `cloud_only` per the K disposition in `considerations.md`), derived purely from the requirement. **Go evidence does not move this count** — `aws-sdk-go-v2/service/s3` → `bucket`; `aws-sdk-go-v2/service/sqs` → `queue`; `pgx`/`gorm` → `db.sql`; `aws-sdk-go-v2/service/dynamodb` → `kv`; etc. Same shape across all four first-class languages. The primitive set is language-agnostic by construction.
+
+> **Vocabulary note (2026-05-17 disposition of `considerations.md` item A):** the user-code runnable unit is named **`module`** in the IR, not `service`. "Service" overloads with cloud-service (S3, RDS) and is retired as an IR primitive name. The packaging-arithmetic unit (1..N modules → 1 deploy unit) is named **`bundle`**.
 
 | Primitive | What it is | Cloud backing | Local backing |
 |---|---|---|---|
-| `service` | A runnable container with optional HTTP / queue trigger | App Runner / ECS Fargate / Lambda-container | docker-compose service |
+| `module` | A runnable container with optional HTTP / queue / cron trigger | App Runner / ECS Fargate / Lambda-container (per its bundle's `shape:`) | docker-compose service |
 | `bucket` | Object store | S3 | MinIO |
 | `queue` | Durable point-to-point queue | SQS | ElasticMQ |
 | `topic` | Pub/sub fan-out | SNS | LocalStack-SNS |
@@ -126,10 +128,13 @@ That yields **eight primitives**, derived purely from the requirement. **Go evid
 | `db.sql` | Relational DB | RDS / Aurora Postgres or MySQL | postgres:16 / mysql:8 |
 | `secret` | Secret / config value | SSM + Secrets Manager | env vars (with optional dev `.env` file) |
 | `static_site` | SPA / static asset hosting | S3 + CloudFront | nginx container |
+| `cloud_only` | Cloud-managed primitive with no honest local stand-in (Bedrock, CloudFront, DAX, …) | per `cloud_only.type` | none — composition is always `cloud-managed` |
 
-**Demoted from primitive to trigger attribute**: `cron`. A scheduled invocation is a property of a `service`.
+**Demoted from primitive to trigger attribute**: `cron`. A scheduled invocation is a property of a `module` and lives under that module's `triggers:` list (see `considerations.md` item D disposition).
 
-**Auto-derived, not user-facing**: `network` (VPC, subnets, security groups).
+**Auto-derived, not user-facing**: `network` (VPC, subnets, security groups) — defaults documented in `considerations.md` item F disposition.
+
+**Packaging arithmetic — `bundle`** (not in the 8 primitives because it is a *grouping*, not a thing the user models from first principles): 1..N modules co-located in one container image / process / Lambda function. Each bundle has a `shape: long_running | function | batch`. When `bundles:` is absent from the yaml, supeux auto-bundles one bundle per module. See `considerations.md` item J disposition for the modular-monolith Terraform shape.
 
 ---
 
@@ -299,73 +304,107 @@ One `supeux.yaml` (the IR). Three projections, generated on demand:
 - `infra/<target>/*.tf` (when target's runtime = `aws`)
 - `.github/workflows/deploy-<target>.yml` (CI bootstrap)
 
-Schema (illustrative):
+Schema (illustrative; reflects the 2026-05-17 dispositions in `considerations.md` — modules first-class, `bundles:` for packaging arithmetic, per-resource `composition:`, cron under module triggers, `cloud_only` as a resource kind). The typed IR data model and the mapping-unambiguity audit for this shape live in [`ir.md`](ir.md); a fully annotated emit sample (HCL + compose + hybrid delta) lives in [`hcl_walkthrough.md`](hcl_walkthrough.md):
 
 ```yaml
 name: my-app
 default_target: local
 
-services:
+modules:                           # user-code units (was: services). Each is one Dockerfile / build context.
   api:
-    build: ./services/api          # or image: my-registry/api:tag
-    shape: long-running            # long-running | function | batch
+    build: ./modules/api           # or image: my-registry/api:tag
+    kind: http                     # http | worker | cron | batch | adapter
+    language: go                   # python | rust | typescript | go | container
     expose: { port: 8080, public: true }
     uses: [uploads, jobs, app_db, sessions, stripe_key]
   worker:
-    build: ./services/worker
-    shape: long-running
-    trigger: { queue: jobs }
+    build: ./modules/worker
+    kind: worker
+    language: rust
     uses: [app_db, uploads, jobs]
+    triggers:
+      - queue: { from: jobs }                                  # consumer of `jobs`
+      - cron:  { schedule: "0 2 * * *", name: nightly_cleanup, timezone: UTC }
 
-resources:
+resources:                         # cloud-managed primitives + cloud_only (the 9th kind)
   uploads:
     type: bucket
     class: standard
     lifecycle: keep-90d
+    composition: cloud-managed     # oss-local | cloud-managed | by-id (default per-resource)
   archives:
     type: bucket
     class: glacier-deep-archive
+    composition: cloud-managed
   jobs:
     type: queue
     kind: standard
+    composition: oss-local
   app_db:
     type: db.sql
     engine: postgres
     version: "16"
     tier: prod-small
+    composition: oss-local
   sessions:
     type: kv
     primary_key: [pk, sk]
     capacity_mode: on-demand
-
-triggers:
-  nightly_cleanup:
-    schedule: "0 2 * * *"
-    target: worker
+    composition: cloud-managed
+  legacy_bus:                      # third leg of composition: reference an existing ARN
+    type: queue
+    composition: by-id
+    by_id: { aws: "arn:aws:sqs:us-east-1:123456789012:legacy" }
+  llm:                             # cloud_only as a ResourceKind (not a top-level section anymore)
+    type: cloud_only
+    cloud_only:
+      type: bedrock.llm
+      model: "anthropic.claude-opus-4-7-20260416-v1:0"
 
 secrets:
-  stripe_key: {}
+  stripe_key: { from: ssm, path: /my-app/stripe }
 
-cloud_only:
-  llm: { type: bedrock.llm, model: "anthropic.claude-opus-4-7-20260416-v1:0" }
+bundles:                           # packaging arithmetic — 1..N modules → 1 deploy unit.
+  # When `bundles:` is absent, supeux auto-bundles one bundle per module (named after the module).
+  # Explicit `bundles:` is only required for the modular-monolith case or when a target references a bundle by name.
+  monolith:  { modules: [api, worker], shape: long_running, image: single }   # modular monolith
+  api_svc:   { modules: [api],         shape: long_running }
+  worker_fn: { modules: [worker],      shape: function }
 
-targets:
-  local:   { runtime: docker-compose }
+targets:                           # named deployment strategies = points in (packaging × placement × composition)
+  local:
+    runtime: docker-compose
+    placement:   { monolith: { on: compose } }
+    # resources keep declared `composition:`; nothing to override
   staging:
     runtime: aws
     region: us-east-1
     account_id: "111122223333"
-    overrides:
-      app_db: { tier: dev }
+    default_composition: cloud-managed   # sugar — every resource defaults cloud-managed in this target
+    placement:
+      api_svc:   { on: fargate, size: "0.5vCPU/1GB" }
+      worker_fn: { on: lambda,  size: "1024MB" }
+    composition:
+      app_db: { mode: cloud-managed, tier: dev }
     ci:
       on: { push: { branches: [main] } }
+  hybrid-dev:                      # local processes hitting real S3 + real Bedrock (mixed composition)
+    runtime: docker-compose
+    placement:   { monolith: { on: compose } }
+    composition:
+      uploads: { mode: cloud-managed }    # override declared oss-local for this target
+      app_db:  { mode: oss-local }        # explicit, idempotent
   prod:
     runtime: aws
     region: us-east-1
     account_id: "999988887777"
-    overrides:
-      app_db: { tier: premium }
-      uploads: { lifecycle: versioning+archival }
+    default_composition: cloud-managed
+    placement:
+      api_svc:   { on: fargate, size: "1vCPU/2GB", scale: { min: 2, max: 20 } }
+      worker_fn: { on: lambda,  size: "2048MB" }
+    composition:
+      app_db:  { mode: cloud-managed, tier: premium }
+      uploads: { mode: cloud-managed, lifecycle: versioning+archival }
     ci:
       on: { workflow_dispatch: {} }
 ```
@@ -383,7 +422,7 @@ targets:
 | `topic` | `kind: standard · fifo` |
 | `cache` (v1.x) | `tier: dev · prod-small · prod-cluster · serverless · memorydb` |
 
-**Env-var injection contract** — language-agnostic. For each resource a `service` `uses:`, supeux derives a canonical env var name and injects it:
+**Env-var injection contract** — language-agnostic. For each resource a `module` `uses:`, supeux derives a canonical env var name and injects it:
 
 | Resource type | Env var(s) |
 |---|---|
@@ -448,7 +487,7 @@ These are the new facts from `mapping_aws_to_go.md` / `mapping_go_to_aws.md` / `
 6. **MSK-IAM is mature in Go.** `aws/aws-msk-iam-sasl-signer-go` is battle-tested; both `segmentio/kafka-go` and `confluentinc/confluent-kafka-go` integrate cleanly with the IAM signer. Go's MSK-IAM story is on par with Java's and meaningfully cleaner than TS's (`kafkajs` doesn't natively sign SigV4 — needs `confluent-kafka-javascript` librdkafka FFI fallback). Same posture as Python's mature signer.
 7. **Pulumi-Go is mature, and Go is the CLI implementation language.** Per `thesis.md:63`, supeux's own CLI is in Go and Pulumi-Go-as-CLI-internal is the documented next move if HCL expressiveness ever binds. With Go now a first-class user-code language as well (v4 §14.1), Go sits at both ends of supeux. The IaC tooling landscape for Go (cdktf-go sunset Dec 10, 2025; AWS CDK Go in preview emits CloudFormation; Pulumi-Go imperative) leaves no first-party HCL-emitting-from-Go toolchain — same conclusion as the other three languages: supeux fills the gap polyglot-first.
 8. **The Go ecosystem hosts two named Tier 1 options per pair for LLM and email.** v4 §4 names both `langchaingo` and `eino` for LLM (LangChain port vs CloudWeGo typed-chain DSL), and both `net/smtp` and `gomail` for email (stdlib vs community wrapper). Other Tier 1 pairs (token verify, STT, vision) name one canonical Go library. The two-option surface reflects genuine ergonomic splits in the Go ecosystem rather than maturity gaps — both options are production-grade.
-9. **Go is NATS's home language.** NATS itself is written in Go; the `nats-io/nats.go` client is first-class. Where TS / Python / Rust treat NATS as community, Go users get the most polished NATS integration. (NATS isn't a v4 primitive — too niche — but worth noting for self-host-as-`service` patterns.)
+9. **Go is NATS's home language.** NATS itself is written in Go; the `nats-io/nats.go` client is first-class. Where TS / Python / Rust treat NATS as community, Go users get the most polished NATS integration. (NATS isn't a v4 primitive — too niche — but worth noting for self-host-as-`module` patterns.)
 10. **No bundling step.** Go compiles to a single static binary. Unlike TS's esbuild/tsc/`bun build` step before Lambda packaging, Go's `go build -o bootstrap` produces the deployable artifact directly. supeux's "we don't build your container" posture is even simpler for Go users.
 11. **`sqlc` codegen requires live schema at build time** — parallel to Rust's `sqlx::query!` macro gotcha. CI must run `sqlc generate` after migrations are added to schema files; many teams commit the generated code so production builds don't need `sqlc` available. `gorm.AutoMigrate` is the dual-mode trap: works locally but production must use `golang-migrate/migrate` or `pressly/goose`.
 12. **Graviton arm64 cross-compile is one flag.** `GOOS=linux GOARCH=arm64 go build` produces an arm64 binary on any host without emulation or multi-arch Docker buildx setup. Same source, two architectures. Unlike Prisma's `binaryTargets` per-arch concern in TS, Go users get this for free.
@@ -497,10 +536,10 @@ What ships first. Everything in §2 that isn't here is deferred to v1.1+, with t
 
 Hard constraints to keep the v1 PoC shippable in weeks, not months:
 
-- **5 primitives**: `service`, `bucket`, `queue`, `db.sql`, `secret`.
-- **2 `service` shapes**: `long-running` (Fargate / App Runner) and `function` (Lambda container-image). Under v4's no-SDK design, the `function` shape is *not* a per-language handler abstraction — it's a different Terraform deploy target for the same container. The user's code wraps itself in `lambda_http` (Rust), `Mangum` (Python), `hono/aws-lambda` / `serverless-http` / `@fastify/aws-lambda` (TS), or `aws-lambda-go-api-proxy` (Go) inside the container; supeux generates the Lambda Terraform instead of the Fargate Terraform.
-- **Triggers in v1**: `http` (Function URL for `function`-shape; ALB for `long-running`-shape) and `queue` (SQS event source mapping for `function`; long-poll consumer in user code for `long-running`).
-- **Deferred to v1.1**: `topic`, `kv`, `static_site`, `cron` triggers, `service` `shape: batch`, API Gateway.
+- **5 primitives**: `module`, `bucket`, `queue`, `db.sql`, `secret`.
+- **2 `bundle` shapes**: `long_running` (Fargate / App Runner) and `function` (Lambda container-image). Under v4's no-SDK design, the `function` shape is *not* a per-language handler abstraction — it's a different Terraform deploy target for the same container. The user's code wraps itself in `lambda_http` (Rust), `Mangum` (Python), `hono/aws-lambda` / `serverless-http` / `@fastify/aws-lambda` (TS), or `aws-lambda-go-api-proxy` (Go) inside the container; supeux generates the Lambda Terraform instead of the Fargate Terraform.
+- **Triggers in v1**: `http` (Function URL for `function`-shape; ALB for `long_running`-shape) and `queue` (SQS event source mapping for `function`; long-poll consumer in user code for `long_running`).
+- **Deferred to v1.1**: `topic`, `kv`, `static_site`, `cron` triggers, `bundle` `shape: batch`, API Gateway, modular-monolith bundles (multi-module per bundle) — v1 ships single-module-per-bundle only.
 - **Targets**: `local` (docker-compose) and `aws-dev` (Terraform → AWS).
 - **Languages**: language-neutral CLI. Reference apps: **Python (FastAPI + Mangum), Rust (axum + `lambda_http`), TypeScript (Hono + `hono/aws-lambda`), Go (chi + `aws-lambda-go-api-proxy/chi`)**. **Four reference apps in v1** validate the cross-language claim at full first-class scope out the gate (resolves §14.1 + §14.4). The cost is a fourth CI matrix entry plus Go-specific verification rows (Graviton arm64 cross-compile, `AWS_LAMBDA_RUNTIME_API` branch dispatch, `pgx` DSN swap, `BaseEndpoint` consistency across services); the benefit is "first-class" being deliverable-backed for all four languages from day one.
 - **IaC**: emit OpenTofu HCL via `supeux compile`; `supeux up` runs `tofu apply` on the emitted spec. Emit and apply are separate commands by design (§5). State backend = S3 + DynamoDB lock.
@@ -518,7 +557,7 @@ Explicitly **not in scope** for v1:
 - [ ] `supeux init` creates state backend.
 - [ ] **`supeux compile --target=local`** emits `docker-compose.generated.yaml`; reviewable on disk before any container starts.
 - [ ] **`supeux compile --target=aws-dev`** emits `infra/aws-dev/generated/*.tf`; reviewable on disk before any `tofu` invocation. Re-running `compile` overwrites only files in `generated/`; sibling `.tf` files (including `backend.tf`) are preserved.
-- [ ] `supeux up --target=local` reads the emitted compose file and runs `docker compose up`. Reference apps run against it — including `function`-shape services running as long-lived servers locally.
+- [ ] `supeux up --target=local` reads the emitted compose file and runs `docker compose up`. Reference apps run against it — including `function`-shape modules running as long-lived servers locally (no supeux wrapper; user code branches on `AWS_LAMBDA_RUNTIME_API` per the language's idiomatic adapter — see `considerations.md` item E disposition).
 - [ ] `supeux up --target=aws-dev` reads the emitted HCL and runs `tofu init && tofu apply`. The same container images deploy as Fargate services AND as Lambda container-image functions.
 - [ ] `supeux up` errors clearly if no spec has been emitted for the target.
 - [ ] `supeux up --regenerate` re-runs `supeux compile` then applies (opt-in one-shot flow).
@@ -555,7 +594,7 @@ Ordered by what unblocks the most user value first. Each milestone is independen
 ## 11. Risks / honest scope boundary
 
 - **No deploy-time SDK = no compile-time IAM/policy inference.** Mitigation: `supeux spec --check` greps source files for env-var references; warns on mismatches. For Tier 1 services, the recommended community library's typed API provides the type safety supeux's deploy layer doesn't.
-- **Lambda inclusion means the user must write the handler-ABI wrapper themselves.** supeux generates the Lambda Terraform and injects env vars; the user's code has to be `lambda_http`-shaped (Rust), `Mangum`-shaped (Python), `hono/aws-lambda` / `serverless-http` / `@fastify/aws-lambda`-shaped (TS), or `aws-lambda-go-api-proxy`-shaped (Go). For `long-running` services there's no such wrapper. Reference apps demonstrate both. This is the natural seam under no-SDK.
+- **Lambda inclusion means the user must write the handler-ABI wrapper themselves.** supeux generates the Lambda Terraform and injects env vars; the user's code has to be `lambda_http`-shaped (Rust), `Mangum`-shaped (Python), `hono/aws-lambda` / `serverless-http` / `@fastify/aws-lambda`-shaped (TS), or `aws-lambda-go-api-proxy`-shaped (Go). For `long_running`-shape bundles there's no such wrapper. Reference apps demonstrate both. This is the natural seam under no-SDK.
 - **Lambda cold starts vary per language.** Go container-image Lambdas start in 10–50 ms (lowest); Rust ~50–100 ms; TS (Node 22) ~100–500 ms; Python ~500–1500 ms; Java in seconds. supeux defaults are runtime-agnostic; users tune memory / provisioned concurrency / SnapStart via `overrides:` per target.
 - **TS runtime variance.** Node 22 is the official Lambda runtime; Bun on Lambda is community/experimental; Deno is container-baseline-only. supeux defaults to Node 22; Bun and Deno work fine on Fargate as "any container with a Dockerfile."
 - **Go CGO trade-off.** `CGO_ENABLED=0` enables the smallest images (`FROM scratch`) and the fastest cold-starts, but locks out CGO-requiring deps (`gocv` OpenCV, `gosseract` Tesseract, `whisper.cpp` Go bindings, `mattn/go-sqlite3`). Reference apps default to CGO-free; v4 §12 documents the trade-off per affected service.
@@ -610,17 +649,17 @@ The Trivial-band pairs are not 100% identical between cloud and local. Each carr
 
 ## 13. One-page summary
 
-> **End-state vision (§2)**: supeux is a containers-first deploy tool. One yaml manifest, any first-class language (Python, Rust, TypeScript, Go — all four with full mapping/api_diffs evidence in v4), any cloud (AWS first; GCP/Azure reachable later). User code is unmodified containers wired to env-var-driven endpoints; supeux generates docker-compose locally, Terraform/OpenTofu HCL for cloud, and GHA workflows for CI. No SDK, no runtime coupling, no language lock-in. 8 primitives (`service`, `bucket`, `queue`, `topic`, `kv`, `db.sql`, `secret`, `static_site`), 3 `service` shapes (`long-running`, `function`, `batch`), 5 trigger types, ~20 cloud-only resource types, hand-written-`.tf` extension model.
+> **End-state vision (§2)**: supeux is a containers-first deploy tool. One yaml manifest, any first-class language (Python, Rust, TypeScript, Go — all four with full mapping/api_diffs evidence in v4), any cloud (AWS first; GCP/Azure reachable later). User code is unmodified containers wired to env-var-driven endpoints; supeux generates docker-compose locally, Terraform/OpenTofu HCL for cloud, and GHA workflows for CI. No SDK (for cloud-resource access; supeux ships per-language `supeux-rpc-*` SDKs for inter-module communication per `considerations.md` item B disposition), no runtime coupling for cloud SDKs, no language lock-in. 9 primitives (`module`, `bucket`, `queue`, `topic`, `kv`, `db.sql`, `secret`, `static_site`, `cloud_only`) plus `bundle` for packaging arithmetic, 3 `bundle` shapes (`long_running`, `function`, `batch`), 5 trigger types, ~20 cloud-only resource types, hand-written-`.tf` extension model.
 >
 > **What v4 adds vs v3** (§1, §4, §7d, §12): Go evidence — four independent ecosystems agreeing on the same architectural answer. Go Tier 0/1/2 headcounts (~22 / ~5 / ~15) sit at parity with Python and TS; the design holds. Two named Tier 1 community options per Go pair for LLM (`langchaingo` *or* `eino`) and email (`net/smtp` *or* `gomail`); one canonical option for token verify (`golang-jwt` + `keyfunc`), STT (`whisper.cpp` Go bindings), and vision (`onnxruntime_go` / `gocv`). cdktf-go's Dec 10 2025 archive closes the language-native HCL-emit alternative for Go users — same posture as TS. Go's CLI-implementation role per `thesis.md:63` is now doubly load-bearing with Go as a first-class user-code language. Per-Go gotchas (Graviton cross-compile is trivial; CGO trade-off vs `FROM scratch`; `sqlc` build-time schema dependency; `gorm.AutoMigrate` dual-mode trap; `pgx` two-interface choice; `aws-sdk-go-v2` `BaseEndpoint` is the modern path) added to §12.
 >
-> **Architectural call from v3, confirmed by v4** (§3–§5): SoC-containers collapses `function` into a *shape* of `service`. Deploy-time-SDK dissolves (yaml + env-var injection is sufficient for the ~22 Trivial pairs in each first-class language). Tier 1 hard pairs use mature community libraries (rig / litellm / Vercel AI SDK / langchaingo or eino for LLMs; jsonwebtoken / authlib / jose / golang-jwt+keyfunc for token verify; lettre / smtplib / nodemailer / net/smtp or gomail for email). Terraform/OpenTofu HCL emission for IaC — language-neutral, reviewable diffs in CI, no per-language runtime coupling. Go cold-start of 10–50 ms is the lowest of the four first-class languages; Go static binaries yield the smallest container images; Cedar has a native Go implementation; MSK-IAM is mature in Go.
+> **Architectural call from v3, confirmed by v4** (§3–§5): SoC-containers collapses `function` into a *shape* of `bundle` (the deploy-unit a module is packaged into; per the A-disposition rename, `service` is no longer the IR primitive — `module` is the user-code unit, `bundle` is the packaging arithmetic). Deploy-time-SDK dissolves (yaml + env-var injection is sufficient for the ~22 Trivial pairs in each first-class language). Tier 1 hard pairs use mature community libraries (rig / litellm / Vercel AI SDK / langchaingo or eino for LLMs; jsonwebtoken / authlib / jose / golang-jwt+keyfunc for token verify; lettre / smtplib / nodemailer / net/smtp or gomail for email). Terraform/OpenTofu HCL emission for IaC — language-neutral, reviewable diffs in CI, no per-language runtime coupling. Go cold-start of 10–50 ms is the lowest of the four first-class languages; Go static binaries yield the smallest container images; Cedar has a native Go implementation; MSK-IAM is mature in Go.
 >
 > **The IR** (§6): one `supeux.yaml` projecting to three artifacts: `docker-compose.generated.yaml` (local), `infra/<target>/*.tf` (cloud), `.github/workflows/deploy-<target>.yml` (CI). Switching is a single `--target=` flag. No code change between environments — only env vars injected by the supeux runtime. Go reads them identically: `os.Getenv("S3_ENDPOINT_URL")`, `os.Getenv("DATABASE_URL")`, etc.
 >
 > **Two-step flow, not one-shot** (§5): `supeux compile --target=<name>` emits HCL/compose into `infra/<target>/generated/` as a reviewable on-disk artifact; `supeux up --target=<name>` runs `tofu apply` (or `docker compose up`) against that artifact. Emit and apply are separate commands by design — that separation is what operationalizes the thesis principle "Auditable IaC artifacts." `supeux up --regenerate` covers the one-shot ergonomics opt-in.
 >
-> **v1 ships first** (§9, §10): **5 primitives** (`service`, `bucket`, `queue`, `db.sql`, `secret`) with **two shapes** (`long-running`, `function`), **two triggers** (`http`, `queue`), **two targets** (local + aws-dev), **AWS only**, and **Python + Rust + TypeScript + Go reference apps**. v1 is the *smallest scope that exercises every novel design decision* (no-SDK, two shapes, Terraform emission, env-var injection) across all four first-class languages from day one; every subsequent milestone adds coverage without re-deciding architecture.
+> **v1 ships first** (§9, §10): **5 primitives** (`module`, `bucket`, `queue`, `db.sql`, `secret`) with **two `bundle` shapes** (`long_running`, `function`), **two triggers** (`http`, `queue`), **two targets** (local + aws-dev), **AWS only**, and **Python + Rust + TypeScript + Go reference apps**. v1 is the *smallest scope that exercises every novel design decision* (no-SDK, two shapes, Terraform emission, env-var injection) across all four first-class languages from day one; every subsequent milestone adds coverage without re-deciding architecture.
 >
 > **Honest boundary** (§8, §11): the `cloud_only` list is ~20 services — API Gateway, Cognito user-lifecycle, Step Functions multi-service workflows joined it because removing the SDK removes the abstractions that were hiding those lock-ins. Treat the list as a feature, not a limitation. **Cross-language headcounts** (Trivial / Hard / Intractable): Python ~22 / ~5 / ~15; Rust ~18 / ~3 / ~18; TypeScript ~22 / ~5 / ~15; **Go ~22 / ~5 / ~15**. The design holds across four first-class languages.
 

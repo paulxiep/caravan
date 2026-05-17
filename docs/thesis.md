@@ -21,14 +21,14 @@ An application is a graph of **modules** connected by interfaces. supeux lets on
    - Cloud function (Lambda)
    - Cloud batch
 
-   Driven by yaml `targets:` × `service.shape:`.
+   Driven by yaml `targets:` × `bundle.shape:` (where a bundle is a packaging unit of 1..N modules; see the A and J dispositions in `considerations.md`).
 
 3. **Composition — what each resource is bound to.**
    - Local OSS engine (minio, postgres, dynamodb-local, …)
    - Cloud managed service (S3, RDS, DynamoDB, …)
    - Existing cloud resource referenced by ID from another deploy
 
-   **Mixing is first-class.** Local services can talk to real cloud resources in the same run.
+   **Mixing is first-class.** Local processes can talk to real cloud resources in the same run.
 
 These dimensions are orthogonal. A yaml `target:` names a point in (packaging × placement × composition). A repo can declare many such targets — `dev`, `hybrid-dev`, `staging`, `prod`, `pr-preview` — and `supeux up --target=<name>` flips between them. Same source code everywhere.
 

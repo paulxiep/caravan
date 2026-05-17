@@ -19,6 +19,9 @@ This repo is **scoping-stage**: thesis + evidence catalogs, no implementation ye
 ## Scoping documents
 
 - [Thesis](docs/thesis.md) - primary scoping doc. Read first.
+- [IR data model + yaml schema + pipeline](docs/ir.md) - typed IR sketch, the yaml the user writes, compiler phase signatures, RPC env-var contract, mapping unambiguity audit.
+- [HCL primer + worked emit sample](docs/hcl_walkthrough.md) - learn HCL syntax through a fully annotated `staging-fargate` emit + `dev-local` compose + `hybrid-dev` delta.
+- [Considerations](docs/considerations.md) - ambiguity catalogue + dispositions (resolved 2026-05-17 for items A-K).
 - [Abstraction v3 derivation](docs/supeux_abstraction_v3.md) - current long-form derivation that produced the thesis (three-language re-derivation: primitive shapes, yaml schema, IaC choice, gotchas).
 - [AWS service groups](docs/aws_service_groups.md) - cost / latency / scale catalog of AWS services.
 - [GCP service groups](docs/gcp_service_groups.md) - GCP companion to the AWS catalog (cost / latency / scale, GCP-native role groupings).
