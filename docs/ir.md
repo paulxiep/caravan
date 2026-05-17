@@ -1,8 +1,10 @@
 # IR data model + yaml schema + compiler pipeline
 
-> Long-form reference for the IR (intermediate representation) introduced by the 2026-05-17 dispositions in [`considerations.md`](considerations.md). v4 §3 / §6 carry the load-bearing primitive list and yaml shape; this file adds the typed data model, the compiler-pipeline phase signatures, the env-var injection contract for inter-module RPC, and the mapping unambiguity audit that motivates each yaml field.
+> Long-form reference for the IR (intermediate representation) introduced by the 2026-05-17 dispositions in [`considerations.md`](considerations.md). v4 §3 / §6 carry the load-bearing primitive list and yaml shape; this file adds the typed data model, the compiler-pipeline phase signatures, the env-var injection contract for inter-component RPC, and the mapping unambiguity audit that motivates each yaml field.
 >
 > Read order: [thesis.md](thesis.md) → [supeux_abstraction_v4.md](supeux_abstraction_v4.md) §3 + §6 → this file → [hcl_walkthrough.md](hcl_walkthrough.md) for a worked emit sample.
+>
+> **PoC narrowing (current direction)**: the PoC collapses this file's `Module` + `Bundle` two-layer split into a three-piece yaml shape — `entries:` (root deploy units, declared once) + `seams:` (SDK interface declarations, dispatched per target via `inproc | container | lambda`) + `targets:`. Containers are derived from per-target seam decisions, not declared. The yaml `interfaces:` block is gone in favor of yaml's `seams:` block + code-scan cross-check. See [poc_yaml_spec.md](poc_yaml_spec.md) for the narrowed yaml shape, [poc_rpc_sdk.md](poc_rpc_sdk.md) for the SDK contract surface, and [poc_groups_to_code.md](poc_groups_to_code.md) for the 10-group resource catalog. The structures below remain canonical for v1+; the PoC is a strict projection.
 
 ---
 
@@ -235,24 +237,28 @@ from supeux_rpc import interface, provide, client
 class JobRunner:
     def submit(self, job_id: str, payload: dict) -> str: ...
 
-# In module `worker` — owner registers an implementation.
+# In the worker source — owner registers an implementation.
 class WorkerJobRunner(JobRunner):
     def submit(self, job_id, payload): ...
 
 provide(JobRunner, WorkerJobRunner())
 
-# In module `api` — caller gets a proxy. Same call site regardless of packaging.
-runner = client(JobRunner, target_module="worker")
+# In the api source — caller gets a proxy. Same call site regardless of packaging.
+runner = client(JobRunner)                        # PoC: no target_module arg; supeux finds the provider by interface name (one provider per interface enforced at phase 2)
 txn_id = runner.submit("job-42", {"customer_id": 17})
 ```
 
-**Env-var contract** — compiler injects per-bundle process at phase 4:
+The original IR surface required `target_module="worker"`. The PoC drops that argument because phase 2 enforces one provider per interface (single-provider routing). Multi-provider routing (load-balanced fan-out, geographic) is a v1 expansion that may reintroduce the explicit peer-name argument.
+
+**Env-var contract** — compiler injects per-container at phase 4:
 
 | Env var | Value | Meaning |
 |---|---|---|
-| `SUPEUX_RPC_BUNDLE` | `monolith` | The bundle this process belongs to |
-| `SUPEUX_RPC_SELF` | `worker` | The module this process executes as |
-| `SUPEUX_RPC_PEERS` | JSON: `{"api": {"mode":"inproc"}, "billing": {"mode":"http","url":"http://api.staging.internal:8080"}, "fraud": {"mode":"lambda","function_url":"https://abc.lambda-url.us-east-1.on.aws/"}}` | Per-peer dispatch table |
+| `SUPEUX_RPC_SELF` | `worker` | The container this process executes as (yaml container-name) |
+| `SUPEUX_RPC_PEERS` | JSON: `{"JobRunner": {"mode":"inproc"}, "Billing": {"mode":"http","url":"http://billing:8080"}, "Fraud": {"mode":"lambda","function_url":"https://abc.lambda-url.us-east-1.on.aws/"}}` | Per-interface dispatch table |
+| `SUPEUX_RPC_SHARED_SECRET` | random per-deploy hex | Bearer auth for `mode: http` calls |
+
+Original IR additionally listed `SUPEUX_RPC_BUNDLE`. The PoC drops it because the container concept subsumes the bundle (one container = one deploy unit; `SELF` alone identifies it). PEERS keys are now **interface names** (not peer container names), reflecting the single-provider-per-interface PoC constraint.
 
 **Phase 4 computation** — for every module M in the current bundle, for every peer P that M `uses:`:
 - M and P in same bundle → `mode: inproc`

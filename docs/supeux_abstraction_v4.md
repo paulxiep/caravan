@@ -26,12 +26,13 @@ Nothing in `thesis.md` needs to change in its load-bearing principles. A small s
 
 Before scoping v1, the end shape supeux is trying to reach. Every v1 / v1.1 / future decision should track toward this.
 
-supeux, fully realized, is a **containers-first deploy tool** that lets a team write SoC-modular services in any language and deploy them to a cloud (AWS first; GCP/Azure reachable by later HCL-provider work) via one yaml manifest. No SDK, no runtime coupling, no language lock-in.
+supeux, fully realized, is a **containers-first deploy tool** that lets a team write SoC-modular services in any language and deploy them to a cloud (AWS first; GCP/Azure reachable by later HCL-provider work) via one yaml manifest. One supeux-authored runtime library (`supeux-rpc-<lang>` — see [considerations.md item B](considerations.md) and [poc_rpc_sdk.md](poc_rpc_sdk.md)) is required for inter-component RPC; otherwise no runtime coupling, no language lock-in. The earlier "no SDK" framing in this doc is partially superseded: the RPC SDK is the one runtime piece because the packaging dimension is unverifiable without it.
 
 ### What the user writes
 
-- **Containers**, one per bundle. Inside, user code uses the language's normal AWS SDK / driver libraries with `endpoint` / DSN env-var-driven configuration. Lambda-shaped modules wrap themselves with the language's idiomatic adapter (`lambda_http` in Rust, `Mangum` in Python, `hono/aws-lambda` / `serverless-http` / `@fastify/aws-lambda` in TS, `aws-lambda-go-api-proxy` in Go) — that wrapper is user code, not supeux code.
-- **One `supeux.yaml`** declaring modules, resources, bundles, secrets, targets.
+- **Source code** organized into a workspace (Cargo workspace / Python monorepo / pnpm workspace / Go modules). Inside, user code uses the language's normal AWS SDK / driver libraries with `endpoint` / DSN env-var-driven configuration. Lambda-shaped deploy units wrap themselves with the language's idiomatic adapter (`lambda_http` in Rust, `Mangum` in Python, `hono/aws-lambda` in TS, `aws-lambda-go-api-proxy` in Go) — user code, not supeux code. Inter-component calls go through the `supeux-rpc-<lang>` SDK (`@interface` / `provide` / `client`), which is the one runtime piece supeux ships.
+- **A Dockerfile per entry, plus per split-off seam.** Entry's Dockerfile is the monolith build; each seam's focused Dockerfile is used only when that seam is split per target.
+- **One `supeux.yaml`** declaring `entries:`, `seams:`, `resources:`, `secrets:`, `targets:` — per [poc_yaml_spec.md](poc_yaml_spec.md). The previous `modules:` + `bundles:` split is gone in PoC scope (preserved in the full IR for v1+).
 - **Optional**: hand-written `.tf` files alongside generated ones, for AWS features supeux hasn't wrapped. supeux never overwrites them.
 
 ### What supeux generates
@@ -255,7 +256,9 @@ supeux's job for Tier 2 is: (a) provision the cloud resource via Terraform, (b) 
 
 **Mitigation for Tier 1 wiring errors**: community libraries' `from_env()`-style constructors (or env-driven model strings) read canonical env-var names — supeux documents which names to use so its injected vars match what each language's library expects.
 
-**On supeux-authored libraries**: today the per-pair landscape points toward community-library sufficiency for Tier 1 *across four independent languages*; supeux ships zero code libraries and curates guidance instead. The four-language convergence is the strongest evidence yet that this call is right.
+**On supeux-authored libraries**: for Tier 1 *data-plane* hard pairs (LLM, JWT, email), today's per-pair landscape points toward community-library sufficiency across all four languages; supeux ships zero data-plane adapter libraries and curates guidance instead. But for the **inter-component control-plane** — calls between user-written components that must dispatch as inproc / HTTP / Lambda based on packaging — no community library exists. supeux ships one library per language for this: `supeux-rpc-<lang>` (see [considerations.md item B](considerations.md) and [poc_rpc_sdk.md](poc_rpc_sdk.md)). Data-plane abstraction stays community; control-plane RPC is supeux-authored.
+
+For Tier 1 *deploy-time orchestration* (which provider package compiles into the binary per target): supeux owns this too, via per-target manifest patching (see [considerations.md item R](considerations.md)). The user installs nothing manually; supeux patches `Cargo.toml` / `requirements.txt` / `package.json` / `go.mod` in the per-target build context to add the SDK and select Tier 1 providers. User's source manifest is untouched.
 
 ---
 

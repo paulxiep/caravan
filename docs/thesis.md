@@ -8,12 +8,12 @@ An application is a graph of **modules** connected by interfaces. supeux lets on
 
 ### The three dimensions
 
-1. **Packaging — how modules become processes.**
-   - Modular monolith (N modules → 1 process)
-   - Multi-container (N modules → N containers in one deploy unit, co-located)
-   - Multi-service (N modules → N independently deployed units)
+1. **Packaging — how source seams become deploy units.**
+   - Modular monolith (N seams → 1 process)
+   - Multi-container (N seams → N containers in one deploy unit, co-located)
+   - Multi-service (N seams → N independently deployed units)
 
-   Driven by yaml. The user's modular discipline + a community RPC library handle the inter-module abstraction; supeux does the packaging arithmetic.
+   Driven by yaml. The user wraps inter-component call sites in the **supeux-rpc-<lang> SDK** (`@interface` / `provide` / `client`); each such site is a *seam*, a candidate split point. Per target, yaml decides per-seam: `inproc` (no new deploy unit), `container` (new compose service / Fargate task), or `lambda` (new Lambda function). Containers are *derived* from these decisions, not declared. Supeux does the packaging arithmetic, computing per-deploy-unit `SUPEUX_RPC_PEERS` tables the SDK reads at runtime to route each call.
 
 2. **Placement — where processes run.**
    - Local (docker-compose)
@@ -50,7 +50,9 @@ These follow directly from the thesis and are unlikely to shift:
 - **One yaml is the IR.** Projections (docker-compose, Terraform/HCL, GHA) are generated from it; never the reverse.
 - **Cloud-agnostic primitives by name** (`bucket`, not `s3`). Schema doesn't break when non-AWS providers are added.
 - **Auditable IaC artifacts.** Generated HCL is reviewable in CI; no opaque deploy step.
-- **SoC-containers assumed.** User code is already containerizable; supeux deploys it, never asks the user to restructure it.
+- **One structural contract: the supeux-rpc-<lang> SDK at inter-component seams.** Within that single contract, user code is whatever the user wrote — supeux composes the deploy graph (per-target container partitioning + IaC emission) without further restructuring. The earlier framing "user code already containerizable; supeux never asks the user to restructure" is partially superseded: the SDK contract IS one structural ask; everything else holds. See `poc_rpc_sdk.md` §1 for the without-SDK anti-pattern this contract prevents.
+- **Supeux owns build artifacts per target.** User owns the Dockerfile per container. Supeux patches the user's package manifest (`Cargo.toml` / `requirements.txt` / `package.json` / `go.mod`) in the per-target build context with two categories of supeux-managed deps: the RPC SDK (always) and Tier-1 hard-pair provider selection (the `llm` group's Bedrock vs Ollama provider, etc.). User's on-disk manifest is untouched.
+- **One supeux.yaml = one VPC.** Each yaml emits one network boundary (one VPC for cloud, one compose network for local). Multi-VPC apps use multiple yamls; supeux does not coordinate across them.
 - **Abstraction libraries are structural for hard pairs.** Where a cloud service and its local counterpart speak different wire APIs (Bedrock ↔ Ollama, Cognito ↔ local JWT, SES ↔ SMTP), keeping user code the same across deployments requires an abstraction layer with cloud + local impls. The layer can live in a community library, in a supeux-authored library, or in user code — but it must exist. This follows from the thesis (same code, different deployments); it isn't a tradeoff. *Who authors it* per pair is a separate scope call, in Current evaluation below.
 - **Resource tiering is explicit, not inferred.** Scale, latency, throughput, durability, and cost are deliberate human choices, not derivable from code or usage. Each resource primitive exposes a small vocabulary the user declares directly (`db.sql: tier: dev | prod-small | prod | premium | global`; `bucket: class: standard | intelligent | glacier-instant | …`; `kv: capacity_mode: on-demand | provisioned`; plus a `variant:` field for the rare cases where the resource type itself differs — S3 Express One Zone vs S3 Vectors vs S3 standard). supeux maps user-declared tiers to cloud-specific resources via mapping tables (`aws_service_groups.md` today; GCP / Azure tables later); it never guesses scale from traffic patterns or code shape.
 
@@ -71,10 +73,10 @@ Reading the landscape and tradeoffs as of 2026-05-16. These are tradeoff calls, 
 ## Positioning (orientation, not commitment)
 
 - **Application-definition compiler.** supeux sits between application code and infrastructure-as-code. Write one yaml describing the module graph and its bound cloud resources. Run `supeux compile --target=<name>` to emit auditable Terraform/HCL (cloud) or `docker-compose.generated.yaml` (local) into `infra/<target>/generated/`; review or hand-correct as needed; then `supeux up --target=<name>` applies the emitted spec via `tofu apply` (cloud) or `docker compose up` (local). Emit and apply are separate commands so the HCL artifact is genuinely reviewable, not a transient byproduct.
-- **Not Encore-shaped.** Encore generates RPC stubs from code structure via codegen. supeux requires modular code with both in-process and remote impls (via community RPC libraries) and handles only the packaging arithmetic.
+- **Not Encore-shaped.** Encore generates RPC stubs from code structure via codegen. supeux requires user code to call across component boundaries through the supeux-rpc-<lang> SDK; supeux handles only the packaging arithmetic, computing per-container `SUPEUX_RPC_PEERS` dispatch tables the SDK reads at runtime. The SDK is request/response HTTP/JSON v1; user keeps whatever web framework they want for external entry.
 - **Not Pulumi-shaped.** Pulumi makes IaC an imperative SDK in user language. supeux emits HCL artifacts the user reads and reviews.
 - **Not Kubernetes-shaped.** Managed runtimes (Fargate, App Runner, Lambda) are the default lane; EKS is reachable but unprioritized.
-- **Not a runtime library in user code.** supeux is deploy tooling. User code reads env vars and uses whatever AWS SDK / community library it would have used anyway. (A small per-language adapter library *could* exist for proven Tier-1 gaps — see Current evaluation above.)
+- **One supeux-authored runtime library in user code: `supeux-rpc-<lang>`.** Everything else (AWS SDKs, Tier-1 abstraction libraries like litellm / rig-core / Vercel AI SDK / langchaingo, web frameworks) is what the user would have imported anyway — supeux just patches the dep into the per-target build context so the user doesn't have to add it manually. The RPC SDK is the one runtime piece because the packaging dimension is unverifiable without a runtime that abstracts inproc vs HTTP vs Lambda dispatch. Everything else stays deploy tooling.
 
 ## Companion documents
 
