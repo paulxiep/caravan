@@ -1,18 +1,18 @@
 # Python API Diffs: AWS ↔ Local Container
 
 > **Snapshot date: 2026-05-16.** References `aws_service_groups.md`, `mapping_python_to_aws.md`, `mapping_aws_to_python.md`.
-> **Framing**: Python ecosystem evidence feeding into `thesis.md` (conceptual home) and `supeux_abstraction_v2.md` (long-form derivation). The difficulty bands below map onto v2's T0/T1/T2 service tiers — see the row at the bottom of the bands table.
+> **Framing**: Python ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v2.md` (long-form derivation). The difficulty bands below map onto v2's T0/T1/T2 service tiers — see the row at the bottom of the bands table.
 
 For each AWS↔local pair surfaced in the mapping files, this file shows the exact Python code change required to switch between them and assigns a **difficulty band**:
 
-| Band | Meaning | What supeux does | v2 tier |
+| Band | Meaning | What caravan does | v2 tier |
 |---|---|---|---|
 | **Trivial** | One env var (endpoint URL or DSN) controls the switch. Same imports, same calls. | Sets env vars at deploy. Done. | **T0** |
 | **Moderate** | Same library, but a few config keys or call shapes differ; or a small adapter (`Mangum`, env-driven branches) closes the gap. | Documents the adapter shape. Usually no library needed. | **T0** (mostly); occasionally T1 |
-| **Hard** | Different wire APIs cloud vs local; a structural abstraction is required. | **Uses the recommended Python community library** — `litellm` for LLMs, `authlib`/`python-jose` for token verification, `smtplib` for email, `openai-whisper` for STT, `opencv-python`+`ultralytics` for vision. supeux **does not ship** a runtime adapter library; see v2 §4. | **T1** |
+| **Hard** | Different wire APIs cloud vs local; a structural abstraction is required. | **Uses the recommended Python community library** — `litellm` for LLMs, `authlib`/`python-jose` for token verification, `smtplib` for email, `openai-whisper` for STT, `opencv-python`+`ultralytics` for vision. caravan **does not ship** a runtime adapter library; see v2 §4. | **T1** |
 | **Intractable** | No realistic local equivalent. Don't try to emulate — false positives hide bugs. | Marks `cloud_only:` in the yaml IR (v2 §6, §8). User picks one of v2's four patterns per service: **skip** (feature-flag off locally), **hit-real** (mounted creds; pay real $$), **engine-swap** (DAX→DDB-local, S3 Vectors→FAISS, etc.), or **stub**. | **T2** |
 
-Snippets are ≤15 lines each and assume `os.environ` is populated by the supeux runtime / docker-compose / GHA matrix.
+Snippets are ≤15 lines each and assume `os.environ` is populated by the caravan runtime / docker-compose / GHA matrix.
 
 ---
 
@@ -248,7 +248,7 @@ client.write_api().write(bucket="metrics", record=Point("cpu").field("usage", 42
 
 ## FastAPI app: one container, two `shape:` values (Lambda or Fargate)
 
-Per v2 §3 / §9, Lambda is one `shape:` of the `service` primitive — not a separate primitive. The user writes a FastAPI app once and uses `Mangum` to bridge the handler ABI. supeux generates `aws_lambda_function` Terraform around the same container image when `shape: function`, or `aws_ecs_service` Terraform when `shape: long-running`. No supeux SDK, no decorator — the user's container handles the ABI in their own idiom.
+Per v2 §3 / §9, Lambda is one `shape:` of the `service` primitive — not a separate primitive. The user writes a FastAPI app once and uses `Mangum` to bridge the handler ABI. caravan generates `aws_lambda_function` Terraform around the same container image when `shape: function`, or `aws_ecs_service` Terraform when `shape: long-running`. No caravan SDK, no decorator — the user's container handles the ABI in their own idiom.
 
 ```python
 from fastapi import FastAPI
@@ -268,9 +268,9 @@ else:
     uvicorn.run(app, host="0.0.0.0", port=8080)  # → Fargate / App Runner / local docker-compose
 ```
 
-**Verdict: Moderate (T0 in v2's tier system).** The seam is one `if` statement; the same container image deploys both ways. supeux's only job is to inject env vars the same way it does for any other service. v2 §9's "Why Lambda fits v1 (it nearly didn't)" walks through this: removing the decorator SDK is what made Lambda inclusion cheap — supeux emits `aws_lambda_function` + `aws_lambda_function_url` HCL, the user's Python container handles the rest.
+**Verdict: Moderate (T0 in v2's tier system).** The seam is one `if` statement; the same container image deploys both ways. caravan's only job is to inject env vars the same way it does for any other service. v2 §9's "Why Lambda fits v1 (it nearly didn't)" walks through this: removing the decorator SDK is what made Lambda inclusion cheap — caravan emits `aws_lambda_function` + `aws_lambda_function_url` HCL, the user's Python container handles the rest.
 
-**Constraints inherited from Lambda regardless of supeux**: websockets need API Gateway WebSocket (separate primitive, deferred to v1.1+; see v2 §8 / §11); streaming responses need Lambda Function URLs with response streaming on; lifespan startup runs per cold-start. None of these are supeux concerns — they're Lambda properties.
+**Constraints inherited from Lambda regardless of caravan**: websockets need API Gateway WebSocket (separate primitive, deferred to v1.1+; see v2 §8 / §11); streaming responses need Lambda Function URLs with response streaming on; lifespan startup runs per cold-start. None of these are caravan concerns — they're Lambda properties.
 
 ## Celery worker — SQS broker (cloud) vs Redis broker (local)
 
@@ -303,7 +303,7 @@ schedule.every().day.at("02:00").do(lambda: requests.post("http://app:8000/jobs/
 while True:
     schedule.run_pending(); time.sleep(30)
 ```
-**Verdict: Moderate.** The handler code is the same (it receives an event); only the trigger differs. supeux should generate the EventBridge Scheduler rule from a `@supeux.cron("0 2 * * *")` decorator and skip generating the local-side scheduler container by default — most dev sessions don't need cron firing.
+**Verdict: Moderate.** The handler code is the same (it receives an event); only the trigger differs. caravan should generate the EventBridge Scheduler rule from a `@caravan.cron("0 2 * * *")` decorator and skip generating the local-side scheduler container by default — most dev sessions don't need cron firing.
 
 ## X-Ray tracing (cloud) vs Jaeger (local) via OpenTelemetry
 
@@ -335,7 +335,7 @@ def get_feature_flags():
         ...
     return json.loads(os.environ.get("FEATURE_FLAGS", "{}"))
 ```
-**Verdict: Moderate.** AppConfig's value is staged rollouts + validators. Locally, env-driven JSON is fine — supeux just generates a `feature_flags.py` adapter that picks based on env.
+**Verdict: Moderate.** AppConfig's value is staged rollouts + validators. Locally, env-driven JSON is fine — caravan just generates a `feature_flags.py` adapter that picks based on env.
 
 ---
 
@@ -360,7 +360,7 @@ def verify_token(token: str) -> dict:
     return dict(claims)                     # sub, email, custom: attrs, ...
 ```
 
-**Verdict: Hard band → v2 Tier 1.** Cognito's *token issuance* surface (JWKS-served RS256) is a well-defined standard; `authlib`/`python-jose` hide the cloud↔local difference behind one JWKS URL env var. Cognito's *user lifecycle* (sign-up confirmation, MFA flows, custom attribute admin, hosted UI) has no portable abstraction and stays cloud-only — that's the right answer per v2 §8: don't try to fake admin paths; either skip in local dev or hit real Cognito via mounted creds. **supeux does not ship `AuthService` / `CognitoAuth` / `LocalJWTAuth`** — that was the v1 prescription; v2 §4 explicitly defers to authlib.
+**Verdict: Hard band → v2 Tier 1.** Cognito's *token issuance* surface (JWKS-served RS256) is a well-defined standard; `authlib`/`python-jose` hide the cloud↔local difference behind one JWKS URL env var. Cognito's *user lifecycle* (sign-up confirmation, MFA flows, custom attribute admin, hosted UI) has no portable abstraction and stays cloud-only — that's the right answer per v2 §8: don't try to fake admin paths; either skip in local dev or hit real Cognito via mounted creds. **caravan does not ship `AuthService` / `CognitoAuth` / `LocalJWTAuth`** — that was the v1 prescription; v2 §4 explicitly defers to authlib.
 
 ## API Gateway WebSocket (cloud) vs FastAPI websockets (local)
 
@@ -386,7 +386,7 @@ async def ws_endpoint(ws: WebSocket):
         msg = await ws.receive_text()
         await ws.send_text(f"echo: {msg}")
 ```
-**Verdict: Hard.** API Gateway WebSocket inverts the connection model: connections are *stored* (in DynamoDB), and you push to them via REST (`post_to_connection`). FastAPI websockets are stateful per-process. There is no shared abstraction; supeux must pick one model and document the trade-off. For real-time apps, ECS Fargate + FastAPI websockets is the saner cloud target.
+**Verdict: Hard.** API Gateway WebSocket inverts the connection model: connections are *stored* (in DynamoDB), and you push to them via REST (`post_to_connection`). FastAPI websockets are stateful per-process. There is no shared abstraction; caravan must pick one model and document the trade-off. For real-time apps, ECS Fargate + FastAPI websockets is the saner cloud target.
 
 ## Step Functions Standard (cloud) vs Celery chain / Prefect (local)
 
@@ -406,8 +406,8 @@ from celery import chain
 chain(validate.s(order), charge.s(), notify.s()).apply_async()
 ```
 **Verdict: Hard.** Step Functions has durable state, retry policy DSL, parallel branches, human approval steps. Celery has chains/groups but persistence and observability are weaker. Either:
-- (a) supeux defines workflows in a DSL and emits ASL for cloud / Celery code for local, **or**
-- (b) supeux only supports workflows on cloud and documents "no local equivalent — test against AWS."
+- (a) caravan defines workflows in a DSL and emits ASL for cloud / Celery code for local, **or**
+- (b) caravan only supports workflows on cloud and documents "no local equivalent — test against AWS."
 
 (b) is what I'd recommend — synthesizing two backends doubles the surface area for limited benefit.
 
@@ -427,13 +427,13 @@ from fastapi import BackgroundTasks
 async def create_order(order: Order, bg: BackgroundTasks):
     bg.add_task(process, order)
 ```
-**Verdict: Hard if you care about local-vs-cloud durability.** BackgroundTasks die with the process. supeux's option is to run a local Celery/RQ worker + SQS-emulator (ElasticMQ), keeping the *queue* abstraction honest both sides. That's the recommended pattern.
+**Verdict: Hard if you care about local-vs-cloud durability.** BackgroundTasks die with the process. caravan's option is to run a local Celery/RQ worker + SQS-emulator (ElasticMQ), keeping the *queue* abstraction honest both sides. That's the recommended pattern.
 
 ---
 
 # Intractable — no realistic local equivalent
 
-For these, supeux must mark `cloud_only: true` and refuse to bind locally. Trying to emulate is worse than not — false positives hide bugs.
+For these, caravan must mark `cloud_only: true` and refuse to bind locally. Trying to emulate is worse than not — false positives hide bugs.
 
 ## Bedrock LLM (cloud) vs Ollama (local) — `litellm` is the abstraction
 
@@ -452,7 +452,7 @@ reply = litellm.completion(
 text = reply.choices[0].message.content
 ```
 
-**Verdict: Hard band → v2 Tier 1.** litellm handles the per-provider request/response shaping; user code is unchanged across deployments. **supeux does not ship `LLMClient` / `BedrockLLM` / `OllamaLLM`** — that was the v1 prescription; v2 §4 explicitly defers to litellm. **Output equivalence is not promised** — Claude Opus 4.7 and Llama 3.1 are different models; local tests are plumbing-level, real Bedrock tests are output-quality.
+**Verdict: Hard band → v2 Tier 1.** litellm handles the per-provider request/response shaping; user code is unchanged across deployments. **caravan does not ship `LLMClient` / `BedrockLLM` / `OllamaLLM`** — that was the v1 prescription; v2 §4 explicitly defers to litellm. **Output equivalence is not promised** — Claude Opus 4.7 and Llama 3.1 are different models; local tests are plumbing-level, real Bedrock tests are output-quality.
 
 **Still T2 / cloud-only**: Bedrock **Knowledge Bases**, **Agents**, and **Guardrails**. litellm doesn't bridge these — they are AWS-orchestration services with no OSS equivalent. Per v2 §4, user picks "skip in local" or "hit real AWS via mounted creds" patterns per service.
 
@@ -564,10 +564,10 @@ function handler(event) {
 | IoT — Analytics | IoT Analytics / SiteWise / etc | (none) | Intractable | **T2** |
 
 **Headcount (per v2's tier semantics)**:
-- **T0**: ~22 pairs — env-var swap is enough; no abstraction library required. supeux's bread and butter.
-- **T1**: ~5 pairs — community libraries cover them (`litellm`, `authlib`/`python-jose`, `smtplib`, `openai-whisper`, `opencv-python`+`ultralytics`). supeux **does not ship** an SDK; v2 §4 documents which library per pair.
+- **T0**: ~22 pairs — env-var swap is enough; no abstraction library required. caravan's bread and butter.
+- **T1**: ~5 pairs — community libraries cover them (`litellm`, `authlib`/`python-jose`, `smtplib`, `openai-whisper`, `opencv-python`+`ultralytics`). caravan **does not ship** an SDK; v2 §4 documents which library per pair.
 - **T2**: ~15 pairs — `cloud_only:` in the IR. User picks one of v2 §4's four patterns: skip / hit-real / engine-swap / stub.
 
 The remaining ~12 entries are Moderate-band T0s where a small adapter (`Mangum`, OTel exporter env var, Celery's broker config) closes the gap without needing a community library.
 
-See `supeux_abstraction_v2.md` for how these tiers translate into v1 PoC scope, IR primitives, and the yaml switch shape. Conceptual home: `thesis.md`.
+See `caravan_abstraction_v2.md` for how these tiers translate into v1 PoC scope, IR primitives, and the yaml switch shape. Conceptual home: `thesis.md`.

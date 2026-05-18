@@ -453,9 +453,9 @@ pub trait LlmClient: Send + Sync {
   - **Lambda runtime** — `lambda_http` lets one axum app run as a Lambda binary or a standalone HTTP server.
   - **Edge / IoT** — Rust dominates embedded; FreeRTOS, Greengrass components, mosquitto all first-class.
 
-**Implications for supeux** (developed in `supeux_abstraction_v2.md`):
+**Implications for caravan** (developed in `caravan_abstraction_v2.md`):
 - The ~21 wire-or-behavior-compatible services are the obvious abstraction targets — `endpoint_url` / DSN swap, no SDK needed.
 - The ~22 partial services either need a thin trait abstraction at the user's code boundary (`LlmClient`, `TokenVerifier`) or honest cloud-only marking.
-- The ~17 none-viable services are `cloud_only: true` in the IR — supeux refuses to bind them locally.
+- The ~17 none-viable services are `cloud_only: true` in the IR — caravan refuses to bind them locally.
 
-See `rust_api_diffs.md` for the actual code-diff per pair, `mapping_rust_to_aws.md` for the reverse direction (which container plays the AWS role in dev), and `supeux_abstraction_v2.md` for the synthesized PoC scope.
+See `rust_api_diffs.md` for the actual code-diff per pair, `mapping_rust_to_aws.md` for the reverse direction (which container plays the AWS role in dev), and `caravan_abstraction_v2.md` for the synthesized PoC scope.

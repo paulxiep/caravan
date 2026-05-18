@@ -2,7 +2,7 @@
 
 > A PoC-narrowed subset of the [12 per-language mapping docs](mapping_aws_to_python.md). Picks 10 basic groups from the [~36 AWS service role groups](aws_service_groups.md), defaults each to its cheapest-to-provision on-demand auto-scale option, and shows the cloud SDK call + local OSS call + env-var swap for each of [Python](mapping_aws_to_python.md), [Rust](mapping_aws_to_rust.md), [TypeScript](mapping_aws_to_typescript.md), and [Go](mapping_aws_to_go.md).
 >
-> **Data-plane vs control-plane.** This doc covers the **data-plane** — how user code calls cloud resources (S3, DynamoDB, SQS, …) with the same source in cloud and local environments. The **control-plane** — how user code calls *other parts of itself* across deploy units — is covered by [poc_rpc_sdk.md](poc_rpc_sdk.md) (the `supeux-rpc-<lang>` SDK + seam dispatch). Both are required for the PoC to demonstrate the thesis end-to-end.
+> **Data-plane vs control-plane.** This doc covers the **data-plane** — how user code calls cloud resources (S3, DynamoDB, SQS, …) with the same source in cloud and local environments. The **control-plane** — how user code calls *other parts of itself* across deploy units — is covered by [poc_rpc_sdk.md](poc_rpc_sdk.md) (the `caravan-rpc-<lang>` SDK + seam dispatch). Both are required for the PoC to demonstrate the thesis end-to-end.
 >
 > Read order: [thesis.md](thesis.md) → [poc_rpc_sdk.md](poc_rpc_sdk.md) (control-plane) → this file (data-plane) → [poc_yaml_spec.md](poc_yaml_spec.md) (the entries + seams + targets yaml that exercises both).
 
@@ -23,7 +23,7 @@
 | 9 | [search](#9-search) | `search` *(new)* | OpenSearch Serverless (BM25 + k-NN) | `opensearchproject/opensearch:2` | code-rag |
 | 10 | [llm](#10-llm) | `llm` *(new, Tier-1 hard pair)* | Bedrock | Ollama / FastEmbed | code-rag |
 
-**Tier 0 vs Tier 1.** Nine of these groups (compute, object_store, kv, queue, sql, secret, cache, stream, search) are **Tier 0** — same client library both sides; only an `endpoint_url` / DSN env var changes between cloud and local. One group, **`llm`, is Tier 1** — cloud (Bedrock SDK) and local (Ollama / FastEmbed) speak different wire APIs, so a community abstraction library (rig-core / litellm / Vercel AI SDK / langchaingo) bridges them, and supeux selects which provider compiles into the binary per target via [manifest patching](poc_yaml_spec.md#manifest-patching). Tier 1 is the only group where the user's package manifest differs across targets.
+**Tier 0 vs Tier 1.** Nine of these groups (compute, object_store, kv, queue, sql, secret, cache, stream, search) are **Tier 0** — same client library both sides; only an `endpoint_url` / DSN env var changes between cloud and local. One group, **`llm`, is Tier 1** — cloud (Bedrock SDK) and local (Ollama / FastEmbed) speak different wire APIs, so a community abstraction library (rig-core / litellm / Vercel AI SDK / langchaingo) bridges them, and caravan selects which provider compiles into the binary per target via [manifest patching](poc_yaml_spec.md#manifest-patching). Tier 1 is the only group where the user's package manifest differs across targets.
 
 **Thesis reconciliation.** Defaulting compute to Lambda is PoC pragmatism, not a thesis claim. Lambda needs zero VPC/ALB/cluster provisioning; switching an entry to `container` (Fargate) is one yaml line — see [poc_yaml_spec.md "Extensibility"](poc_yaml_spec.md#extensibility--three-3-line-diffs).
 
@@ -36,7 +36,7 @@
 
 ## 1. compute
 
-The "compute" group is implicit in supeux's yaml — there's no `type: compute` resource. Compute appears in two places:
+The "compute" group is implicit in caravan's yaml — there's no `type: compute` resource. Compute appears in two places:
 
 - **`entries:`** — root deploy units (one or more per yaml). Each entry has a Dockerfile, triggers (HTTP / queue / cron), and a deploy-mode choice per target (`lambda | container | batch`).
 - **`seams:`** — SDK seams that *may* be split off into their own deploy units per target (`inproc | container | lambda`).
@@ -52,9 +52,9 @@ Per-language: each entry's Dockerfile builds the monolith binary. A thin per-lan
 | **TypeScript** | `import { handle } from "hono/aws-lambda"; export const handler = handle(app)` ([mapping_aws_to_typescript.md:66-72](mapping_aws_to_typescript.md#L66-L72)) | `serve({ fetch: app.fetch, port: 8080 })` | same |
 | **Go** | `lambda.Start(chiadapter.New(r).ProxyWithContext)` ([mapping_aws_to_go.md:74-97](mapping_aws_to_go.md#L74-L97)) | `http.ListenAndServe(":8080", r)` | same |
 
-**Extension port.** Change `entries.<name>: lambda` → `container` in a target → supeux emits `aws_ecs_service` (cloud) or `compose service` (local) instead of Lambda. User's main() branch already handles both via the env-var check; the Dockerfile is unchanged.
+**Extension port.** Change `entries.<name>: lambda` → `container` in a target → caravan emits `aws_ecs_service` (cloud) or `compose service` (local) instead of Lambda. User's main() branch already handles both via the env-var check; the Dockerfile is unchanged.
 
-**External HTTP vs inter-seam RPC** *(critical scope boundary)*. The per-language frameworks above (FastAPI, axum, Hono, chi) handle **external HTTP entry** — user requests arriving from outside the supeux-managed graph. For **calls between supeux-managed code units**, user code does NOT write its own HTTP plumbing — it uses [poc_rpc_sdk.md](poc_rpc_sdk.md)'s `client::<Interface>()` instead. The SDK dispatches that call as in-process, container, or Lambda Function URL invoke depending on yaml-driven seam decisions. Hand-rolling HTTP for inter-seam calls breaks the thesis's "same source, three lives" promise.
+**External HTTP vs inter-seam RPC** *(critical scope boundary)*. The per-language frameworks above (FastAPI, axum, Hono, chi) handle **external HTTP entry** — user requests arriving from outside the caravan-managed graph. For **calls between caravan-managed code units**, user code does NOT write its own HTTP plumbing — it uses [poc_rpc_sdk.md](poc_rpc_sdk.md)'s `client::<Interface>()` instead. The SDK dispatches that call as in-process, container, or Lambda Function URL invoke depending on yaml-driven seam decisions. Hand-rolling HTTP for inter-seam calls breaks the thesis's "same source, three lives" promise.
 
 ---
 
@@ -114,7 +114,7 @@ PoC default: **Aurora Serverless v2 Postgres** (ACU scales to ~0.5 minimum, auto
 | **TypeScript** | `new Pool({ connectionString: process.env.DATABASE_URL })` (`pg`) ([mapping_aws_to_typescript.md:172-179](mapping_aws_to_typescript.md#L172-L179)) | same code | same |
 | **Go** | `sql.Open("pgx", os.Getenv("DATABASE_URL"))` (`pgx/stdlib`) ([mapping_aws_to_go.md:227-239](mapping_aws_to_go.md#L227-L239)) | same code | same |
 
-**Extension port.** `engine: mysql` swaps to MySQL / Aurora MySQL (drivers change per language). `tier: dev|prod|premium|global` is the supeux-owned scale knob; the time-series gap (`timeseries` group folded in) is covered by adding `extensions: [timescaledb]`. The vector-search gap is covered by `extensions: [pgvector]` — see group 9.
+**Extension port.** `engine: mysql` swaps to MySQL / Aurora MySQL (drivers change per language). `tier: dev|prod|premium|global` is the caravan-owned scale knob; the time-series gap (`timeseries` group folded in) is covered by adding `extensions: [timescaledb]`. The vector-search gap is covered by `extensions: [pgvector]` — see group 9.
 
 ---
 
@@ -129,7 +129,7 @@ PoC default: **SSM Parameter Store** (free tier; pay-per-call beyond). LocalStac
 | **TypeScript** | `new SSMClient({ endpoint }).send(new GetParameterCommand({ Name, WithDecryption: true }))` ([mapping_aws_to_typescript.md:366-371](mapping_aws_to_typescript.md#L366-L371)) | same code | same |
 | **Go** | `ssm.NewFromConfig(cfg, func(o *ssm.Options){ o.BaseEndpoint = aws.String(ep) }).GetParameter(...)` ([mapping_aws_to_go.md:461-477](mapping_aws_to_go.md#L461-L477)) | same code | same |
 
-**Extension port.** `from: secrets-manager` for rotated secrets / cross-account share; `from: env` skips the SDK entirely (dev convenience). Supeux phase-4 injects the cloud-side resource ARN and the IAM read permission automatically.
+**Extension port.** `from: secrets-manager` for rotated secrets / cross-account share; `from: env` skips the SDK entirely (dev convenience). Caravan phase-4 injects the cloud-side resource ARN and the IAM read permission automatically.
 
 ---
 
@@ -182,7 +182,7 @@ PoC default: **OpenSearch Serverless** with vector + BM25 in one collection (OCU
 
 PoC default: **Bedrock** (cloud) ↔ **Ollama** (chat) / FastEmbed (embedding) / local cross-encoder (rerank). **Tier-1 hard pair** per the [thesis](thesis.md#L50) — cloud and local speak different wire APIs, so an abstraction library is structurally required. Required by [code-rag](../../code-rag/) (currently Gemini via rig-core; refactors to Bedrock).
 
-**This is the only group where supeux's manifest patching matters at compile time.** For the other 9 groups, the user installs one client library (boto3, aws-sdk-go, etc.) and only an env var changes per target. For `llm`, the **deps themselves differ per target** — Bedrock provider for cloud, Ollama provider for local. Supeux picks which provider compiles in by patching the user's package manifest per target. See [poc_yaml_spec.md "Manifest patching"](poc_yaml_spec.md#manifest-patching).
+**This is the only group where caravan's manifest patching matters at compile time.** For the other 9 groups, the user installs one client library (boto3, aws-sdk-go, etc.) and only an env var changes per target. For `llm`, the **deps themselves differ per target** — Bedrock provider for cloud, Ollama provider for local. Caravan picks which provider compiles in by patching the user's package manifest per target. See [poc_yaml_spec.md "Manifest patching"](poc_yaml_spec.md#manifest-patching).
 
 | Lang | Abstraction library | Cloud manifest patch | Local manifest patch |
 |---|---|---|---|
@@ -200,9 +200,9 @@ User code stays identical across targets (calls the abstraction library's surfac
 | **TypeScript** | `generateText({ model: <provider>(LLM_MODEL), prompt })` | [mapping_aws_to_typescript.md:473-484](mapping_aws_to_typescript.md#L473-L484) |
 | **Go** | `llms.GenerateFromSinglePrompt(ctx, llm, prompt)` (langchaingo) | [mapping_aws_to_go.md:584-614](mapping_aws_to_go.md#L584-L614) |
 
-`LLM_MODEL` env var (also supeux-injected) picks the specific model — e.g., `bedrock/anthropic.claude-opus-4-7-...` for cloud, `ollama/llama3.1` for local. The library knows how to route based on the model string + which provider package is compiled in.
+`LLM_MODEL` env var (also caravan-injected) picks the specific model — e.g., `bedrock/anthropic.claude-opus-4-7-...` for cloud, `ollama/llama3.1` for local. The library knows how to route based on the model string + which provider package is compiled in.
 
-**Embedding / rerank.** Bedrock covers embeddings (Titan, Cohere Embed) under the same SDK; for the local side, embeddings need a separate path (FastEmbed via FFI for Python/Rust; `@xenova/transformers` for TypeScript; ONNX runtime for Go). Express in yaml as `llm: { task: embedding }` — supeux picks the right Bedrock model ID / local container image based on `task:`.
+**Embedding / rerank.** Bedrock covers embeddings (Titan, Cohere Embed) under the same SDK; for the local side, embeddings need a separate path (FastEmbed via FFI for Python/Rust; `@xenova/transformers` for TypeScript; ONNX runtime for Go). Express in yaml as `llm: { task: embedding }` — caravan picks the right Bedrock model ID / local container image based on `task:`.
 
 **Extension port.** `provider: openai | gemini | anthropic-api | vertex` — selects a different cloud manifest patch (different provider package). User code unchanged. Bedrock Knowledge Bases / Agents / Guardrails remain Tier-2 (`cloud_only`) — no community library bridges those.
 
@@ -216,7 +216,7 @@ The following are deliberately cut from PoC. All are recoverable from [ir.md](ir
 
 **Resource-level fields not in PoC**: `lifecycle:`, `variant:` (each group's PoC default fixes the variant); `composition: by-id` (v1 hybrid-debug feature).
 
-**Resource types not in PoC**: `topic` (use `queue` with multiple consumers, or fold into `stream`); `static_site` (deferred per [supeux_abstraction_v4.md](supeux_abstraction_v4.md)); `cloud_only` (the Tier-2 escape hatch — handled per-call-site as documented in each `mapping_aws_to_<lang>.md` Bedrock Knowledge Bases / Agents / Guardrails rows).
+**Resource types not in PoC**: `topic` (use `queue` with multiple consumers, or fold into `stream`); `static_site` (deferred per [caravan_abstraction_v4.md](caravan_abstraction_v4.md)); `cloud_only` (the Tier-2 escape hatch — handled per-call-site as documented in each `mapping_aws_to_<lang>.md` Bedrock Knowledge Bases / Agents / Guardrails rows).
 
 **Trigger types not in PoC**: `topic`, `bucket_event` (use `queue` + S3-event-to-SQS wiring done by hand for PoC; auto-derive in v1.1).
 

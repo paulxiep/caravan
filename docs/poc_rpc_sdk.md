@@ -1,8 +1,8 @@
-# PoC inter-process RPC SDK (`supeux-rpc-<lang>`)
+# PoC inter-process RPC SDK (`caravan-rpc-<lang>`)
 
-> The load-bearing primitive of the supeux thesis. User code writes `client::<Interface>().method()` once. The same call site dispatches as in-process function call (when provider lives in the same process), HTTP POST (when in a different container in the same compose runtime), or Lambda Function URL invoke (when in a different Lambda function) — without source-code edits. The yaml decides which.
+> The load-bearing primitive of the caravan thesis. User code writes `client::<Interface>().method()` once. The same call site dispatches as in-process function call (when provider lives in the same process), HTTP POST (when in a different container in the same compose runtime), or Lambda Function URL invoke (when in a different Lambda function) — without source-code edits. The yaml decides which.
 >
-> The SDK is the one structural contract supeux asks of the user. Within it, code is whatever the user wrote.
+> The SDK is the one structural contract caravan asks of the user. Within it, code is whatever the user wrote.
 >
 > Companion to [poc_groups_to_code.md](poc_groups_to_code.md) (data-plane / resource catalog). Both feed [poc_yaml_spec.md](poc_yaml_spec.md), where the yaml's seam-dispatch decisions drive what this SDK does at runtime.
 >
@@ -11,13 +11,13 @@
 ## 1. Why it exists — and the structural buy-in it asks of the user
 
 The thesis ([thesis.md:7-8](thesis.md#L7-L8)):
-> An application is a graph of **modules** connected by interfaces. supeux lets one yaml project that graph onto any point in three orthogonal dimensions, with the source code unchanged.
+> An application is a graph of **modules** connected by interfaces. caravan lets one yaml project that graph onto any point in three orthogonal dimensions, with the source code unchanged.
 
 The **packaging** dimension is the load-bearing one. Without a primitive that abstracts inter-process calls, users would write Flask / axum / Hono / chi HTTP plumbing inside every potential split point — hard-coding the assumption that peers are reachable over the network. Flipping to a single-process monolith would require deleting that plumbing; flipping to Lambda would require swapping it for `lambda.Invoke`. The "source code unchanged" claim collapses.
 
-The supeux-rpc SDK is what makes the claim hold. **It is the one structural contract supeux asks of the user**: write inter-component calls that *might* split through the SDK, not through hand-rolled HTTP. Once that contract is observed, the seam can be deployed inproc / container / lambda by yaml choice alone, with no code edits.
+The caravan-rpc SDK is what makes the claim hold. **It is the one structural contract caravan asks of the user**: write inter-component calls that *might* split through the SDK, not through hand-rolled HTTP. Once that contract is observed, the seam can be deployed inproc / container / lambda by yaml choice alone, with no code edits.
 
-**The unit of supeux's vocabulary is the seam.** A seam = an `@interface` declaration + its `provide(...)` impl + its `client(...)` call sites. Per seam, per target, [poc_yaml_spec.md](poc_yaml_spec.md) decides the dispatch mode.
+**The unit of caravan's vocabulary is the seam.** A seam = an `@interface` declaration + its `provide(...)` impl + its `client(...)` call sites. Per seam, per target, [poc_yaml_spec.md](poc_yaml_spec.md) decides the dispatch mode.
 
 ### Without the SDK (anti-pattern, do not write this)
 
@@ -42,7 +42,7 @@ The api code assumes the embedder is reachable over HTTP. If both end up in the 
 
 ```python
 # shared/interfaces.py — declared once, used by both sides:
-from supeux_rpc import interface
+from caravan_rpc import interface
 
 @interface
 class Embedder:
@@ -51,7 +51,7 @@ class Embedder:
 
 ```python
 # embedder source — provider:
-from supeux_rpc import provide
+from caravan_rpc import provide
 from shared.interfaces import Embedder
 
 class EmbedderImpl(Embedder):
@@ -63,14 +63,14 @@ provide(Embedder, EmbedderImpl())
 
 ```python
 # api source — caller:
-from supeux_rpc import client
+from caravan_rpc import client
 from shared.interfaces import Embedder
 
-embedder = client(Embedder)            # supeux looks up the provider by interface name
+embedder = client(Embedder)            # caravan looks up the provider by interface name
 vec = embedder.embed("hi")             # dispatches inproc / http / lambda based on yaml decision
 ```
 
-`api`'s code is identical whether `Embedder` runs in the same process, a sibling Fargate container, or a separate Lambda. The yaml decides; the SDK reads `SUPEUX_RPC_PEERS` at startup and routes each call accordingly. Same source, three lives.
+`api`'s code is identical whether `Embedder` runs in the same process, a sibling Fargate container, or a separate Lambda. The yaml decides; the SDK reads `CARAVAN_RPC_PEERS` at startup and routes each call accordingly. Same source, three lives.
 
 ### Why `client(Interface)` takes no peer-name argument
 
@@ -87,10 +87,10 @@ All four SDKs speak the same wire format. Anyone can implement a 5th-language SD
 ### Request
 
 ```
-POST /_supeux/rpc/<interface>/<method>
+POST /_caravan/rpc/<interface>/<method>
 Host: <peer-host>
 Content-Type: application/json
-X-Supeux-Rpc-Version: 1
+X-Caravan-Rpc-Version: 1
 Authorization: Bearer <shared-secret>          # compose / Fargate-internal modes
 # OR
 Authorization: AWS4-HMAC-SHA256 ...            # Lambda Function URL mode (SigV4)
@@ -107,7 +107,7 @@ Authorization: AWS4-HMAC-SHA256 ...            # Lambda Function URL mode (SigV4
 ```
 HTTP/1.1 200 OK
 Content-Type: application/json
-X-Supeux-Rpc-Version: 1
+X-Caravan-Rpc-Version: 1
 
 {"ok": true, "result": <method-return-value>}
 ```
@@ -126,12 +126,12 @@ Transport-level failures (timeout, 5xx) propagate as language-native exceptions 
 ### Auth
 
 - **inproc mode**: no auth (direct function call; no HTTP at all).
-- **http mode** (peer in a different container in compose or Fargate): shared bearer secret, injected by compiler phase 4 as `SUPEUX_RPC_SHARED_SECRET` env var on all deploy units in the same yaml.
+- **http mode** (peer in a different container in compose or Fargate): shared bearer secret, injected by compiler phase 4 as `CARAVAN_RPC_SHARED_SECRET` env var on all deploy units in the same yaml.
 - **lambda mode** (peer is a Lambda Function URL with `AuthType: AWS_IAM`): SigV4 signing using the caller's IAM role credentials (auto-derived per [ir.md §6a](ir.md#L313) — caller gets `lambda:InvokeFunctionUrl` on peer's Function URL ARN at compile time).
 
 ### Hidden ABI risk
 
-Per [ir.md §7 risk #2](ir.md#L364): the wire-version (`X-Supeux-Rpc-Version`) commits supeux to a stable ABI. Breaking it forces lockstep upgrades across all 4 SDK packages and every deployed function. Treat the wire as frozen at v1; behavior additions go through optional headers; breaking changes wait for a coordinated v2.
+Per [ir.md §7 risk #2](ir.md#L364): the wire-version (`X-Caravan-Rpc-Version`) commits caravan to a stable ABI. Breaking it forces lockstep upgrades across all 4 SDK packages and every deployed function. Treat the wire as frozen at v1; behavior additions go through optional headers; breaking changes wait for a coordinated v2.
 
 ## 3. Env-var contract
 
@@ -139,11 +139,11 @@ Phase 4 of the compiler injects three env vars per deploy unit.
 
 | Env var | Value | Meaning |
 |---|---|---|
-| `SUPEUX_RPC_SELF` | `api` or `embedder` (yaml-derived name) | The deploy unit this process executes as |
-| `SUPEUX_RPC_PEERS` | JSON dispatch table (see below), keyed by **interface name** | Per-seam dispatch mode + endpoint |
-| `SUPEUX_RPC_SHARED_SECRET` | random per-deploy hex string | Bearer auth for `http` mode |
+| `CARAVAN_RPC_SELF` | `api` or `embedder` (yaml-derived name) | The deploy unit this process executes as |
+| `CARAVAN_RPC_PEERS` | JSON dispatch table (see below), keyed by **interface name** | Per-seam dispatch mode + endpoint |
+| `CARAVAN_RPC_SHARED_SECRET` | random per-deploy hex string | Bearer auth for `http` mode |
 
-### `SUPEUX_RPC_PEERS` shape
+### `CARAVAN_RPC_PEERS` shape
 
 ```json
 {
@@ -172,7 +172,7 @@ All four SDKs expose the same conceptual API (`interface` declaration, `provide`
 
 ```python
 # shared/interfaces.py
-from supeux_rpc import interface
+from caravan_rpc import interface
 
 @interface
 class Embedder:
@@ -182,7 +182,7 @@ class Embedder:
 
 ```python
 # embedder source
-from supeux_rpc import provide
+from caravan_rpc import provide
 from shared.interfaces import Embedder
 
 class EmbedderImpl(Embedder):
@@ -196,20 +196,20 @@ provide(Embedder, EmbedderImpl())
 
 ```python
 # api source
-from supeux_rpc import client
+from caravan_rpc import client
 from shared.interfaces import Embedder
 
 embedder = client(Embedder)
 vec = embedder.embed("hello world")
 ```
 
-**Runtime reflection v1**: `@interface` captures method signatures via `inspect.signature`; argument types from annotations drive JSON (de)serialization. `provide(Cls, instance)` registers into the inproc registry plus, if any peer in `SUPEUX_RPC_PEERS` (anywhere in the deploy) marks this deploy unit as the http/lambda target for this interface, the SDK starts a lightweight HTTP server (uvicorn / aiohttp) on the listen port serving `/_supeux/rpc/...`. `client(Cls)` returns a proxy whose attribute access creates per-method dispatchers reading the peer entry.
+**Runtime reflection v1**: `@interface` captures method signatures via `inspect.signature`; argument types from annotations drive JSON (de)serialization. `provide(Cls, instance)` registers into the inproc registry plus, if any peer in `CARAVAN_RPC_PEERS` (anywhere in the deploy) marks this deploy unit as the http/lambda target for this interface, the SDK starts a lightweight HTTP server (uvicorn / aiohttp) on the listen port serving `/_caravan/rpc/...`. `client(Cls)` returns a proxy whose attribute access creates per-method dispatchers reading the peer entry.
 
 ### 4.2 Rust
 
 ```rust
 // shared/src/interfaces.rs
-use supeux_rpc::interface;
+use caravan_rpc::interface;
 
 #[interface]
 pub trait Embedder: Send + Sync {
@@ -235,7 +235,7 @@ impl Embedder for EmbedderImpl {
 }
 
 pub fn register() {
-    supeux_rpc::provide::<dyn Embedder>(Box::new(EmbedderImpl::new()));
+    caravan_rpc::provide::<dyn Embedder>(Box::new(EmbedderImpl::new()));
 }
 ```
 
@@ -246,9 +246,9 @@ use shared::interfaces::Embedder;
 #[tokio::main]
 async fn main() {
     embedder::register();              // when monolith, registers the inproc impl
-    let embedder = supeux_rpc::client::<dyn Embedder>().await;
+    let embedder = caravan_rpc::client::<dyn Embedder>().await;
     // ... handle HTTP requests, call embedder.embed(text).await ...
-    supeux_rpc::serve_forever().await;
+    caravan_rpc::serve_forever().await;
 }
 ```
 
@@ -258,7 +258,7 @@ async fn main() {
 
 ```typescript
 // shared/interfaces.ts
-import { defineInterface } from "supeux-rpc";
+import { defineInterface } from "caravan-rpc";
 
 export interface Embedder {
   embed(text: string): Promise<number[]>;
@@ -270,7 +270,7 @@ export const EmbedderToken = defineInterface<Embedder>("Embedder");
 
 ```typescript
 // embedder source
-import { provide, serveForever } from "supeux-rpc";
+import { provide, serveForever } from "caravan-rpc";
 import { EmbedderToken, type Embedder } from "../shared/interfaces.js";
 
 class EmbedderImpl implements Embedder {
@@ -284,7 +284,7 @@ await serveForever();
 
 ```typescript
 // api source
-import { client } from "supeux-rpc";
+import { client } from "caravan-rpc";
 import { EmbedderToken } from "../shared/interfaces.js";
 
 const embedder = client(EmbedderToken);
@@ -299,7 +299,7 @@ const vec = await embedder.embed("hello world");
 // shared/interfaces/embedder.go
 package interfaces
 
-//go:generate supeux gen-rpc Embedder
+//go:generate caravan gen-rpc Embedder
 
 type Embedder interface {
     Embed(ctx context.Context, text string) ([]float32, error)
@@ -313,7 +313,7 @@ package main
 
 import (
     "github.com/example/myapp/shared/interfaces"
-    "github.com/anthropics/supeux-rpc-go"
+    "github.com/anthropics/caravan-rpc-go"
 )
 
 type embedderImpl struct{ model FastEmbed }
@@ -326,8 +326,8 @@ func (e *embedderImpl) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 }
 
 func main() {
-    supeuxrpc.Provide[interfaces.Embedder](&embedderImpl{model: NewFastEmbed()})
-    supeuxrpc.ServeForever()
+    caravanrpc.Provide[interfaces.Embedder](&embedderImpl{model: NewFastEmbed()})
+    caravanrpc.ServeForever()
 }
 ```
 
@@ -337,22 +337,22 @@ package main
 
 import (
     "github.com/example/myapp/shared/interfaces"
-    "github.com/anthropics/supeux-rpc-go"
+    "github.com/anthropics/caravan-rpc-go"
 )
 
 func main() {
-    embedder := supeuxrpc.Client[interfaces.Embedder]()
+    embedder := caravanrpc.Client[interfaces.Embedder]()
     vec, _ := embedder.Embed(context.Background(), "hello world")
 }
 ```
 
-**Codegen at v1.** `go generate` runs `supeux gen-rpc` which reads the interface and emits server + client adapter files.
+**Codegen at v1.** `go generate` runs `caravan gen-rpc` which reads the interface and emits server + client adapter files.
 
 ## 5. Dispatch modes — pseudocode
 
 ```
 dispatcher(interface_name, method_name, args, kwargs):
-  peer = SUPEUX_RPC_PEERS[interface_name]
+  peer = CARAVAN_RPC_PEERS[interface_name]
 
   match peer.mode:
     case "inproc":
@@ -361,11 +361,11 @@ dispatcher(interface_name, method_name, args, kwargs):
 
     case "http":
       response = http_post(
-        url     = f"{peer.url}/_supeux/rpc/{interface_name}/{method_name}",
+        url     = f"{peer.url}/_caravan/rpc/{interface_name}/{method_name}",
         json    = {"args": args, "kwargs": kwargs},
         headers = {
-          "Authorization":         f"Bearer {SUPEUX_RPC_SHARED_SECRET}",
-          "X-Supeux-Rpc-Version":  "1",
+          "Authorization":         f"Bearer {CARAVAN_RPC_SHARED_SECRET}",
+          "X-Caravan-Rpc-Version":  "1",
         },
       )
       body = response.json()
@@ -374,10 +374,10 @@ dispatcher(interface_name, method_name, args, kwargs):
 
     case "lambda":
       response = http_post(
-        url    = f"{peer.function_url}_supeux/rpc/{interface_name}/{method_name}",
+        url    = f"{peer.function_url}_caravan/rpc/{interface_name}/{method_name}",
         json   = {"args": args, "kwargs": kwargs},
         auth   = SigV4(service="lambda", region=AWS_REGION, credentials=DefaultCredentialProvider()),
-        headers= {"X-Supeux-Rpc-Version": "1"},
+        headers= {"X-Caravan-Rpc-Version": "1"},
       )
       # same body handling as http mode
 ```
@@ -388,12 +388,12 @@ Each language SDK implements this dispatcher idiomatically.
 
 - **Monorepo layout**: `/sdk/python/`, `/sdk/rust/`, `/sdk/typescript/`, `/sdk/go/` — confirmed in [considerations.md item B](considerations.md).
 - **Per-language native packaging**:
-  - Python → PyPI: `supeux-rpc`
-  - Rust → crates.io: `supeux-rpc`
-  - TypeScript → npm: `@supeux/rpc`
-  - Go → `github.com/<org>/supeux-rpc-go`
+  - Python → PyPI: `caravan-rpc`
+  - Rust → crates.io: `caravan-rpc`
+  - TypeScript → npm: `@caravan/rpc`
+  - Go → `github.com/<org>/caravan-rpc-go`
 
-**Supeux auto-patches the user's package manifest** to add the SDK dep. The user does *not* need to remember to `pip install supeux-rpc` or `cargo add supeux-rpc`. See [poc_yaml_spec.md "Manifest patching"](poc_yaml_spec.md#manifest-patching).
+**Caravan auto-patches the user's package manifest** to add the SDK dep. The user does *not* need to remember to `pip install caravan-rpc` or `cargo add caravan-rpc`. See [poc_yaml_spec.md "Manifest patching"](poc_yaml_spec.md#manifest-patching).
 
 ## 7. Out of PoC scope
 
@@ -401,7 +401,7 @@ Each language SDK implements this dispatcher idiomatically.
 - **Chained seams** (a seam that calls another seam). PoC supports seam-as-leaf; chains are v1.
 - **Streaming RPC** (server-streamed iterators, bidirectional). v1 is request/response only.
 - **Codegen for Python & TypeScript** (runtime reflection v1; codegen v2). Rust + Go are codegen-from-day-one because their type systems demand it.
-- **Cross-language IDL** (a `.supeux-rpc` schema file generating stubs in all 4 languages). v1 uses each language's native interface declaration.
+- **Cross-language IDL** (a `.caravan-rpc` schema file generating stubs in all 4 languages). v1 uses each language's native interface declaration.
 - **Retry / circuit breaker / trace propagation.** v1 surfaces transport errors as raw exceptions and does not auto-forward trace context.
 
 For everything above: the user can drop down to direct HTTP (using their web framework) for the specific call site that needs it, without abandoning the SDK for other seams.

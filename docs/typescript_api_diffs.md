@@ -1,18 +1,18 @@
 # TypeScript API Diffs: AWS ↔ Local Container
 
 > **Snapshot date: 2026-05-16.** References `aws_service_groups.md`, `mapping_typescript_to_aws.md`, `mapping_aws_to_typescript.md`.
-> **Framing**: TypeScript ecosystem evidence feeding into `thesis.md` (conceptual home) and `supeux_abstraction_v3.md` (long-form derivation; supersedes v2). The difficulty bands below map onto v3's T0/T1/T2 service tiers — see the row at the bottom of the bands table.
+> **Framing**: TypeScript ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v3.md` (long-form derivation; supersedes v2). The difficulty bands below map onto v3's T0/T1/T2 service tiers — see the row at the bottom of the bands table.
 
 For each AWS↔local pair surfaced in the mapping files, this file shows the exact TypeScript code change required to switch between them and assigns a **difficulty band**:
 
-| Band | Meaning | What supeux does | v3 tier |
+| Band | Meaning | What caravan does | v3 tier |
 |---|---|---|---|
 | **Trivial** | One env var (endpoint URL or DSN) controls the switch. Same imports, same calls. | Sets env vars at deploy. Done. | **T0** |
 | **Moderate** | Same library, but a few config keys or call shapes differ; or a small adapter (framework Lambda wrapper, env-driven branches) closes the gap. | Documents the adapter shape. Usually no library needed. | **T0** (mostly); occasionally T1 |
-| **Hard** | Different wire APIs cloud vs local; a structural abstraction is required. | **Uses the recommended TS community library** — Vercel AI SDK for LLMs, `jose` for token verification, `nodemailer` for email, `@xenova/transformers` for Whisper-shaped STT. supeux **does not ship** a runtime adapter library; see v3 §4. | **T1** |
+| **Hard** | Different wire APIs cloud vs local; a structural abstraction is required. | **Uses the recommended TS community library** — Vercel AI SDK for LLMs, `jose` for token verification, `nodemailer` for email, `@xenova/transformers` for Whisper-shaped STT. caravan **does not ship** a runtime adapter library; see v3 §4. | **T1** |
 | **Intractable** | No realistic local equivalent. Don't try to emulate — false positives hide bugs. | Marks `cloud_only:` in the yaml IR (v3 §6, §8). User picks one of v3's four patterns per service: **skip** (feature-flag off locally), **hit-real** (mounted creds; pay real $$), **engine-swap** (DAX→DDB-local, S3 Vectors→hnswlib, etc.), or **stub**. | **T2** |
 
-Snippets are ≤15 lines each and assume `process.env` is populated by the supeux runtime / docker-compose / GHA matrix. **Runtime**: snippets assume Node 22; flagged when Bun differs.
+Snippets are ≤15 lines each and assume `process.env` is populated by the caravan runtime / docker-compose / GHA matrix. **Runtime**: snippets assume Node 22; flagged when Bun differs.
 
 ---
 
@@ -287,7 +287,7 @@ const decision = authorizer.isAuthorized({
 
 ## "One container, two shapes" — Hono (recommended modern default)
 
-Per v3 §3 / §9, Lambda is one `shape:` of the `service` primitive — not a separate primitive. supeux generates `aws_lambda_function` Terraform around the same container image when `shape: function`, or `aws_ecs_service` Terraform when `shape: long-running`. The user's container handles the ABI in framework-idiomatic code.
+Per v3 §3 / §9, Lambda is one `shape:` of the `service` primitive — not a separate primitive. caravan generates `aws_lambda_function` Terraform around the same container image when `shape: function`, or `aws_ecs_service` Terraform when `shape: long-running`. The user's container handles the ABI in framework-idiomatic code.
 
 ```ts
 // src/index.ts — runs as Lambda OR standalone server from one binary
@@ -303,7 +303,7 @@ if (!process.env.AWS_LAMBDA_RUNTIME_API) {
   serve({ fetch: app.fetch, port: 8080 });   // → Fargate / App Runner / local docker-compose
 }
 ```
-**Verdict: Moderate (T0 in v3's tier system).** The seam is one `if` statement; the same container deploys both ways. Hono's `hono/aws-lambda` is the TS closest analogue to Rust's `lambda_http` — runs on Node, Bun, Deno, and CloudFlare Workers from one source. supeux's only job is to inject env vars the same way it does for any other service.
+**Verdict: Moderate (T0 in v3's tier system).** The seam is one `if` statement; the same container deploys both ways. Hono's `hono/aws-lambda` is the TS closest analogue to Rust's `lambda_http` — runs on Node, Bun, Deno, and CloudFlare Workers from one source. caravan's only job is to inject env vars the same way it does for any other service.
 
 ## "One container, two shapes" — Express + `serverless-http`
 
@@ -339,7 +339,7 @@ if (!process.env.AWS_LAMBDA_RUNTIME_API) {
 ```
 **Verdict: Moderate.** Performant (~2× Express throughput), mature plugin ecosystem, first-party Lambda story. Middle pick between Express and Hono.
 
-**Constraints inherited from Lambda regardless of framework**: websockets need API Gateway WebSocket (separate primitive, deferred to v1.1+); streaming responses need Lambda Function URLs with response streaming on; per-cold-start startup runs the entire `import` graph. None are supeux concerns — they're Lambda properties.
+**Constraints inherited from Lambda regardless of framework**: websockets need API Gateway WebSocket (separate primitive, deferred to v1.1+); streaming responses need Lambda Function URLs with response streaming on; per-cold-start startup runs the entire `import` graph. None are caravan concerns — they're Lambda properties.
 
 ## BullMQ worker — Redis backend (local) vs SQS backend (cloud-leaning)
 
@@ -385,7 +385,7 @@ cron.schedule("0 2 * * *", async () => {
   await fetch("http://app:8080/jobs/nightly", { method: "POST" });
 });
 ```
-**Verdict: Moderate.** Handler code is the same; only the trigger differs. supeux generates an EventBridge Scheduler rule from a yaml `triggers:` declaration and skips the local-side scheduler container by default — most dev sessions don't need cron firing.
+**Verdict: Moderate.** Handler code is the same; only the trigger differs. caravan generates an EventBridge Scheduler rule from a yaml `triggers:` declaration and skips the local-side scheduler container by default — most dev sessions don't need cron firing.
 
 ## X-Ray tracing (cloud) vs Jaeger (local) via OpenTelemetry
 
@@ -438,7 +438,7 @@ const model = provider(process.env.LLM_MODEL ?? "llama3.1");
 
 const { text } = await generateText({ model, prompt: "hi" });
 ```
-**Verdict: Moderate plumbing — Hard band → v3 Tier 1.** The AI SDK handles per-provider request/response shaping; user code is unchanged across deployments. **supeux does not ship `LlmClient` / `BedrockLLM` / `OllamaLLM`** — that was the v1 prescription; v3 §4 explicitly defers to the Vercel AI SDK. **Output equivalence is not promised** — Claude Opus 4.7 and Llama 3.1 are different models; local tests are plumbing-level, real Bedrock tests are output-quality.
+**Verdict: Moderate plumbing — Hard band → v3 Tier 1.** The AI SDK handles per-provider request/response shaping; user code is unchanged across deployments. **caravan does not ship `LlmClient` / `BedrockLLM` / `OllamaLLM`** — that was the v1 prescription; v3 §4 explicitly defers to the Vercel AI SDK. **Output equivalence is not promised** — Claude Opus 4.7 and Llama 3.1 are different models; local tests are plumbing-level, real Bedrock tests are output-quality.
 
 **Still T2 / cloud-only**: Bedrock **Knowledge Bases**, **Agents**, and **Guardrails**. The AI SDK doesn't bridge these — they are AWS-orchestration services with no OSS equivalent.
 
@@ -466,7 +466,7 @@ export async function verifyToken(token: string): Promise<JWTPayload> {
 }
 ```
 
-**Verdict: Hard band → v3 Tier 1.** Cognito's *token issuance* surface (JWKS-served RS256) is a well-defined standard; `jose` hides the cloud↔local difference behind one JWKS URL env var. Cognito's *user lifecycle* (sign-up confirmation, MFA flows, custom attribute admin, hosted UI) has no portable abstraction and stays cloud-only per v3 §8: don't fake admin paths; either skip in local dev or hit real Cognito via mounted creds. **supeux does not ship `TokenVerifier` / `CognitoVerifier` / `LocalJwtVerifier`** — v3 §4 explicitly defers to `jose`.
+**Verdict: Hard band → v3 Tier 1.** Cognito's *token issuance* surface (JWKS-served RS256) is a well-defined standard; `jose` hides the cloud↔local difference behind one JWKS URL env var. Cognito's *user lifecycle* (sign-up confirmation, MFA flows, custom attribute admin, hosted UI) has no portable abstraction and stays cloud-only per v3 §8: don't fake admin paths; either skip in local dev or hit real Cognito via mounted creds. **caravan does not ship `TokenVerifier` / `CognitoVerifier` / `LocalJwtVerifier`** — v3 §4 explicitly defers to `jose`.
 
 ## API Gateway WebSocket (cloud) vs `ws` / `socket.io` (local)
 
@@ -494,7 +494,7 @@ wss.on("connection", (ws) => {
   ws.on("message", (data) => ws.send(`echo: ${data}`));
 });
 ```
-**Verdict: Hard.** API Gateway WebSocket inverts the connection model: connections are *stored* (in DynamoDB), and you push to them via REST (`PostToConnection`). `ws` / `socket.io` are stateful per-process. There is no shared abstraction; supeux picks one model and documents the trade-off. For real-time apps, ECS Fargate + `ws` is the saner cloud target.
+**Verdict: Hard.** API Gateway WebSocket inverts the connection model: connections are *stored* (in DynamoDB), and you push to them via REST (`PostToConnection`). `ws` / `socket.io` are stateful per-process. There is no shared abstraction; caravan picks one model and documents the trade-off. For real-time apps, ECS Fargate + `ws` is the saner cloud target.
 
 ## Step Functions Standard (cloud) vs BullMQ flows / pure async (local)
 
@@ -519,8 +519,8 @@ await flow.add({
 });
 ```
 **Verdict: Hard.** Step Functions has durable state, retry policy DSL, parallel branches, human approval steps. BullMQ flows exist but persistence/observability are weaker. Either:
-- (a) supeux defines workflows in a DSL and emits ASL for cloud / BullMQ for local, **or**
-- (b) supeux only supports workflows on cloud and documents "no local equivalent — test against `aws-stepfunctions-local`."
+- (a) caravan defines workflows in a DSL and emits ASL for cloud / BullMQ for local, **or**
+- (b) caravan only supports workflows on cloud and documents "no local equivalent — test against `aws-stepfunctions-local`."
 
 (b) is the recommendation — synthesizing two backends doubles the surface area for limited benefit.
 
@@ -546,13 +546,13 @@ export const handler: SQSHandler = async (event) => {
 // Local: setImmediate (lossy — dies with the process)
 setImmediate(async () => { await processOrder(order); });
 ```
-**Verdict: Hard if you care about local-vs-cloud durability.** `setImmediate` / `process.nextTick` / floating promises all die with the process. supeux's option is to run a local BullMQ worker + ElasticMQ — keeping the *queue* abstraction honest both sides. That's the recommended pattern.
+**Verdict: Hard if you care about local-vs-cloud durability.** `setImmediate` / `process.nextTick` / floating promises all die with the process. caravan's option is to run a local BullMQ worker + ElasticMQ — keeping the *queue* abstraction honest both sides. That's the recommended pattern.
 
 ---
 
 # Intractable — no realistic local equivalent
 
-For these, supeux must mark `cloud_only: true` and refuse to bind locally. Trying to emulate is worse than not — false positives hide bugs.
+For these, caravan must mark `cloud_only: true` and refuse to bind locally. Trying to emulate is worse than not — false positives hide bugs.
 
 ## SageMaker training / inference
 
@@ -671,12 +671,12 @@ function handler(event: any) {
 | IoT — Analytics | IoT Analytics / SiteWise / etc | (none) | Intractable | **T2** |
 
 **Headcount (per v3's tier semantics)**:
-- **T0**: ~22 pairs — env-var swap is enough; no abstraction library required. supeux's bread and butter.
-- **T1**: ~5 pairs — community libraries cover them (**Vercel AI SDK**, **`jose`**, **`nodemailer`**, **`@xenova/transformers`**, optionally an interface around vision SDKs). supeux **does not ship** a runtime adapter library; v3 §4 documents which library per pair.
+- **T0**: ~22 pairs — env-var swap is enough; no abstraction library required. caravan's bread and butter.
+- **T1**: ~5 pairs — community libraries cover them (**Vercel AI SDK**, **`jose`**, **`nodemailer`**, **`@xenova/transformers`**, optionally an interface around vision SDKs). caravan **does not ship** a runtime adapter library; v3 §4 documents which library per pair.
 - **T2**: ~15 pairs — `cloud_only:` in the IR. User picks one of v3 §4's four patterns: skip / hit-real / engine-swap / stub.
 
 The remaining ~12 entries are Moderate-band T0s where a small adapter (framework Lambda wrapper, OTel exporter env var, BullMQ backend swap) closes the gap without needing a community library.
 
 **vs Python (~22 T0 / ~5 T1 / ~15 T2) and Rust (~18 T0 / ~3 T1 / ~18 T2)**: TypeScript headcount sits closest to Python because the `@aws-sdk/client-*` package family mirrors boto3's coverage breadth — every AWS service has a dedicated TS client. A few cells differ at the margins: `kafkajs` is less mature for MSK-IAM than Python's signer; Vercel AI SDK has the richest provider router across the three languages (more providers than `rig` or `litellm`); `@xenova/transformers` is the most ergonomic Whisper-shaped option of the three (no Python dependency required). Net result: TS is a first-class target for the *containers-first* abstraction shape, with the most mature Tier 1 community library landscape of the three languages.
 
-See `supeux_abstraction_v3.md` for how these tiers translate into v1 PoC scope, IR primitives, and the yaml switch shape. Conceptual home: `thesis.md`.
+See `caravan_abstraction_v3.md` for how these tiers translate into v1 PoC scope, IR primitives, and the yaml switch shape. Conceptual home: `thesis.md`.

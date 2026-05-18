@@ -252,4 +252,4 @@ The Rust-side equivalent of "boto3 with `endpoint_url`" is the `aws-sdk-rust` bu
 | jaeger/tempo | X-Ray | X-Ray + Application Signals | OTel via `tracing-opentelemetry` |
 | shuttle.rs | Shuttle Cloud (AWS-backed) | Shuttle Cloud | Alternative IaC path; Rust-only |
 
-See `mapping_aws_to_rust.md` for the reverse direction (which container plays the AWS role in dev), `rust_api_diffs.md` for the per-pair Rust code diff, and `supeux_abstraction_v2.md` for the synthesized PoC scope.
+See `mapping_aws_to_rust.md` for the reverse direction (which container plays the AWS role in dev), `rust_api_diffs.md` for the per-pair Rust code diff, and `caravan_abstraction_v2.md` for the synthesized PoC scope.

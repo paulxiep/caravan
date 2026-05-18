@@ -2,7 +2,7 @@
 
 > **Snapshot date: 2026-05-16.** AWS prices reference `aws_service_groups.md`.
 > **Scope**: Go ecosystem (Go 1.22+). Python, Rust, and TypeScript mirrors live in `mapping_python_to_aws.md` / `mapping_rust_to_aws.md` / `mapping_typescript_to_aws.md`.
-> **Framing**: this file is Go ecosystem evidence feeding into `thesis.md` (conceptual home) and `supeux_abstraction_v4.md` (long-form derivation; supersedes v3). The Cheapest/Production/Premium tier labels below are the **operator's intuition**; they map onto v4 §6's explicit yaml `tier:` vocabulary (`db.sql tier: dev | prod-small | prod | premium | global`, `bucket class: standard | intelligent | …`, etc.) — that mapping is shown inline per row and rolled up in the closing summary table.
+> **Framing**: this file is Go ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v4.md` (long-form derivation; supersedes v3). The Cheapest/Production/Premium tier labels below are the **operator's intuition**; they map onto v4 §6's explicit yaml `tier:` vocabulary (`db.sql tier: dev | prod-small | prod | premium | global`, `bucket class: standard | intelligent | …`, etc.) — that mapping is shown inline per row and rolled up in the closing summary table.
 
 Question this file answers: *"My Go app and its docker-compose dependencies — what does each piece become on AWS?"*
 
@@ -23,7 +23,7 @@ Each row lists three tiers — **Cheapest fit** (PoC, hobby, dev/staging), **Pro
 - **v4 yaml**: `db.sql tier: dev` (RDS micro) · `prod-small` (Aurora Serverless v2) · `prod` (Aurora provisioned multi-AZ) · `premium` (multi-AZ + read replicas + I/O-Optimized) · `global` (Aurora Global / DSQL). Tier 0 — DSN swap via `DATABASE_URL`.
 - **Gotcha (Go-specific, `pgx`)**: `pgx` exposes two interfaces — the native `pgx.Conn` / `pgxpool.Pool` (faster, exposes `LISTEN/NOTIFY`, `COPY`, batch protocol) and `database/sql`-compatible via `import _ "github.com/jackc/pgx/v5/stdlib"` + `sql.Open("pgx", dsn)`. The native interface locks the call sites to pgx; the `database/sql` adapter keeps swap-ability. Pick one per project; mixing both within one repo is confusing.
 - **Gotcha (Go-specific, `sqlc`)**: `sqlc generate` runs at *build time* and needs the schema files in the repo to be in sync with what the SQL queries assume. Parallel to Rust's `sqlx::query!` macro. CI must run `sqlc generate` after any migration is added; many teams check in the generated code so production builds don't need `sqlc` available.
-- **Gotcha (Go-specific, `gorm`)**: `db.AutoMigrate(&User{})` is a development-loop shortcut, not a production migration tool. Use `golang-migrate/migrate`, `pressly/goose`, or `atlasgo/atlas` for managed migrations in cloud targets. supeux doesn't choose for you; document it in the reference apps.
+- **Gotcha (Go-specific, `gorm`)**: `db.AutoMigrate(&User{})` is a development-loop shortcut, not a production migration tool. Use `golang-migrate/migrate`, `pressly/goose`, or `atlasgo/atlas` for managed migrations in cloud targets. caravan doesn't choose for you; document it in the reference apps.
 
 ### mysql / mariadb
 - **Local**: `mysql:8`, `mariadb:11`. Go: `go-sql-driver/mysql` (canonical pure-Go), `gorm`, `ent`, `bun`. ORMs work with the same DSN.
@@ -95,7 +95,7 @@ Each row lists three tiers — **Cheapest fit** (PoC, hobby, dev/staging), **Pro
 - **Local**: file-on-disk. Go: `mattn/go-sqlite3` (CGO, mature, fastest) or `modernc.org/sqlite` (pure-Go, slower, works in scratch).
 - **Cheapest fit**: not a server. For sqlite-on-AWS, options are EFS-backed file (`db.sqlite` on a Fargate-mounted EFS) or Litestream-replicated to S3 — both niche.
 - **Production fit**: migrate to RDS Postgres. sqlite is wrong for prod multi-replica services anyway.
-- **Decision criterion**: sqlite is great for embedded/CLI tools and dev. Doesn't belong in a horizontally-scaled service; supeux's `db.sql` primitive doesn't target it.
+- **Decision criterion**: sqlite is great for embedded/CLI tools and dev. Doesn't belong in a horizontally-scaled service; caravan's `db.sql` primitive doesn't target it.
 
 ---
 
@@ -224,7 +224,7 @@ For each: same Cheapest=Lambda+adapter / Production=Fargate behind ALB / Premium
 - **Production fit**: Cognito User Pools + Identity Pools for federated AWS-resource access. Or self-host Keycloak on Fargate + RDS Postgres if your team has Keycloak conviction.
 - **Premium fit**: Auth0 / Okta / WorkOS on AWS Marketplace.
 - **Decision criterion**: Cognito's UX (hosted UI quirks, custom-attribute friction, password-reset flows) loses to Keycloak on flexibility. Cognito wins on AWS-IAM integration and price at small scale. For >50k users with complex flows (org SSO, branded UI), most teams end up on Auth0/WorkOS or self-host Keycloak.
-- **v4 framing (Tier 1)**: per v4 §4, the canonical pattern is *token verification* both sides via the same community library combo — **`golang-jwt` + `keyfunc`** + a JWKS URL env var. Cognito's JWKS lives at `https://cognito-idp.<region>.amazonaws.com/<pool_id>/.well-known/jwks.json`; Keycloak / dev issuer exposes its own well-known JWKS endpoint. Same `jwt.Parse(token, jwks.Keyfunc, ...)` call both sides; no supeux-shipped library involved. Cognito's *user lifecycle* (sign-up, MFA, hosted UI, custom attributes) remains `cloud_only` per v4 §8.
+- **v4 framing (Tier 1)**: per v4 §4, the canonical pattern is *token verification* both sides via the same community library combo — **`golang-jwt` + `keyfunc`** + a JWKS URL env var. Cognito's JWKS lives at `https://cognito-idp.<region>.amazonaws.com/<pool_id>/.well-known/jwks.json`; Keycloak / dev issuer exposes its own well-known JWKS endpoint. Same `jwt.Parse(token, jwks.Keyfunc, ...)` call both sides; no caravan-shipped library involved. Cognito's *user lifecycle* (sign-up, MFA, hosted UI, custom attributes) remains `cloud_only` per v4 §8.
 - **Code change**: where you previously used Keycloak Admin REST API, the equivalent is `aws-sdk-go-v2/service/cognitoidentityprovider` `Admin*` operations — these don't have a portable abstraction and only run cloud-side anyway. For request-time auth, the `golang-jwt` + `keyfunc` JWKS pattern is the supported path.
 
 ### vault (Hashicorp)
@@ -289,7 +289,7 @@ This section reflects the Tier 1 pair classification in v4 §4 — `litellm`'s G
   out, _ := llms.GenerateFromSinglePrompt(ctx, llm, "hi")
   ```
 - **Decision criterion**: `langchaingo` for breadth + Python-LangChain code-porting; `eino` for typed-graph composition and Go idiomaticity. Both maintained as of 2026.
-- **v4 yaml**: `cloud_only: llm: { type: bedrock.llm, model: "anthropic.claude-opus-4-7-..." }` for the *provisioning marker* (IAM perms, throughput config). User code talks to `langchaingo` or `eino`; supeux just ensures the cloud-side identity has the right Bedrock policies attached and the model ID env var is injected.
+- **v4 yaml**: `cloud_only: llm: { type: bedrock.llm, model: "anthropic.claude-opus-4-7-..." }` for the *provisioning marker* (IAM perms, throughput config). User code talks to `langchaingo` or `eino`; caravan just ensures the cloud-side identity has the right Bedrock policies attached and the model ID env var is injected.
 - **Out of scope for either abstraction (remain `cloud_only` T2)**: Bedrock Knowledge Bases, Bedrock Agents, Bedrock Guardrails — AWS-orchestration services with no OSS equivalent. Either hit real AWS from local dev (mixed mode per v4 §4) or skip locally and test cloud-side.
 
 ### Vision / OCR (Rekognition + Textract)
@@ -346,8 +346,8 @@ This section reflects the Tier 1 pair classification in v4 §4 — `litellm`'s G
 | **Speech STT (Transcribe)** | Transcribe | same | not in v1; `whisper.cpp` Go bindings locally (CGO) | **T1 (`whisper.cpp/bindings/go`)** |
 | **Speech TTS (Polly)** | Polly Neural | same | no first-class Go TTS; cross-language to Python | partial / cross-lang |
 
-**Tier legend**: T0 = same wire API both sides, env-var swap (v4 §4). T1 = different wire APIs, community library bridges (`langchaingo` / `eino`, `golang-jwt` + `keyfunc`, `net/smtp` / `gomail`, `whisper.cpp` bindings). T2 = no local equivalent, `cloud_only:` in IR. See `go_api_diffs.md` for code snippets per pair and `supeux_abstraction_v4.md` §4 for the canonical T0/T1/T2 derivation.
+**Tier legend**: T0 = same wire API both sides, env-var swap (v4 §4). T1 = different wire APIs, community library bridges (`langchaingo` / `eino`, `golang-jwt` + `keyfunc`, `net/smtp` / `gomail`, `whisper.cpp` bindings). T2 = no local equivalent, `cloud_only:` in IR. See `go_api_diffs.md` for code snippets per pair and `caravan_abstraction_v4.md` §4 for the canonical T0/T1/T2 derivation.
 
 ---
 
-See `mapping_aws_to_go.md` for the reverse direction (which container plays the AWS role in dev) and `go_api_diffs.md` for the per-pair Go code diff. Conceptual home: `thesis.md`. Long-form derivation: `supeux_abstraction_v4.md` (supersedes v3).
+See `mapping_aws_to_go.md` for the reverse direction (which container plays the AWS role in dev) and `go_api_diffs.md` for the per-pair Go code diff. Conceptual home: `thesis.md`. Long-form derivation: `caravan_abstraction_v4.md` (supersedes v3).

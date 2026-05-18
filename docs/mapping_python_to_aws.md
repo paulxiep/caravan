@@ -2,7 +2,7 @@
 
 > **Snapshot date: 2026-05-16.** AWS prices reference `aws_service_groups.md`.
 > **Scope**: Python ecosystem only. Other language ecosystems (Go, Java, Ruby) are out of scope for this round; Rust is covered in the parallel `mapping_rust_to_aws.md`.
-> **Framing**: this file is Python ecosystem evidence feeding into `thesis.md` (conceptual home) and `supeux_abstraction_v2.md` (long-form derivation). The Cheapest/Production/Premium tier labels below are the **operator's intuition**; they map onto v2 §6's explicit yaml `tier:` vocabulary (`db.sql tier: dev | prod-small | prod | premium | global`, `bucket class: standard | intelligent | …`, etc.) — that mapping is shown inline per row and rolled up in the closing summary table.
+> **Framing**: this file is Python ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v2.md` (long-form derivation). The Cheapest/Production/Premium tier labels below are the **operator's intuition**; they map onto v2 §6's explicit yaml `tier:` vocabulary (`db.sql tier: dev | prod-small | prod | premium | global`, `bucket class: standard | intelligent | …`, etc.) — that mapping is shown inline per row and rolled up in the closing summary table.
 
 Question this file answers: *"My Python app and its docker-compose dependencies — what does each piece become on AWS?"*
 
@@ -195,7 +195,7 @@ Each row lists three tiers — **Cheapest fit** (PoC, hobby, dev/staging), **Pro
 - **Production fit**: Cognito User Pools + Identity Pools for federated AWS-resource access. Or self-host Keycloak on Fargate + RDS Postgres if your team has Keycloak conviction.
 - **Premium fit**: Auth0 / Okta / WorkOS on AWS Marketplace.
 - **Decision criterion**: Cognito's UX (hosted UI quirks, custom-attribute friction, password-reset flows) loses to Keycloak on flexibility. Cognito wins on AWS-IAM integration and price at small scale. For >50k users with complex flows (org SSO, branded UI), most teams end up on Auth0/WorkOS or self-host Keycloak.
-- **v2 framing (Tier 1)**: per v2 §4, the canonical pattern is *token verification* both sides via the same community library — `authlib` (or `python-jose`) + a JWKS URL env var. Cognito's JWKS lives at `https://cognito-idp.<region>.amazonaws.com/<pool_id>/.well-known/jwks.json`; Keycloak / dev issuer exposes its own well-known JWKS endpoint. Same `verify(token)` call both sides; no supeux-shipped library involved. Cognito's *user lifecycle* (sign-up, MFA, hosted UI, custom attributes) remains `cloud_only` per v2 §8.
+- **v2 framing (Tier 1)**: per v2 §4, the canonical pattern is *token verification* both sides via the same community library — `authlib` (or `python-jose`) + a JWKS URL env var. Cognito's JWKS lives at `https://cognito-idp.<region>.amazonaws.com/<pool_id>/.well-known/jwks.json`; Keycloak / dev issuer exposes its own well-known JWKS endpoint. Same `verify(token)` call both sides; no caravan-shipped library involved. Cognito's *user lifecycle* (sign-up, MFA, hosted UI, custom attributes) remains `cloud_only` per v2 §8.
 - **Code change**: where you previously used `python-keycloak` admin APIs, the equivalent is `boto3.client('cognito-idp')` admin actions — these don't have a portable abstraction and only run cloud-side anyway. For request-time auth, the authlib JWKS pattern is the supported path.
 
 ### vault (Hashicorp)
@@ -247,7 +247,7 @@ This section was absent in the v1-era version of this doc because v1 framed LLMs
       messages=[{"role": "user", "content": "hi"}],
   )
   ```
-- **v2 yaml**: `cloud_only: llm: { type: bedrock.llm, model: "anthropic.claude-opus-4-7-..." }` for the *provisioning marker* (IAM perms, throughput config). User code talks to `litellm`; supeux just ensures the cloud-side identity has the right Bedrock policies attached and the model ID env var is injected.
+- **v2 yaml**: `cloud_only: llm: { type: bedrock.llm, model: "anthropic.claude-opus-4-7-..." }` for the *provisioning marker* (IAM perms, throughput config). User code talks to `litellm`; caravan just ensures the cloud-side identity has the right Bedrock policies attached and the model ID env var is injected.
 - **Out of scope for the litellm abstraction (remain `cloud_only` T2)**: Bedrock Knowledge Bases, Bedrock Agents, Bedrock Guardrails — these are AWS-orchestration services with no OSS equivalent. Either hit real AWS from local dev (mixed mode per v2 §4) or skip locally and test cloud-side.
 
 ### Vision / OCR (Rekognition + Textract)
@@ -301,8 +301,8 @@ This section was absent in the v1-era version of this doc because v1 framed LLMs
 | **Vision (Rekognition/Textract)** | Rekognition off-the-shelf | SageMaker fine-tuned | not in v1; small wrapper if you need swap | T1 |
 | **Speech (Transcribe/Polly)** | Transcribe + Polly Neural | same | not in v1; whisper / piper locally | T1 (whisper) |
 
-**Tier legend**: T0 = same wire API both sides, env-var swap (v2 §4). T1 = different wire APIs, community library bridges (`litellm`, `authlib`, `smtplib`, `openai-whisper`, etc.). T2 = no local equivalent, `cloud_only:` in IR. See `python_api_diffs.md` for code snippets per pair and `supeux_abstraction_v2.md` §4 for the canonical T0/T1/T2 derivation.
+**Tier legend**: T0 = same wire API both sides, env-var swap (v2 §4). T1 = different wire APIs, community library bridges (`litellm`, `authlib`, `smtplib`, `openai-whisper`, etc.). T2 = no local equivalent, `cloud_only:` in IR. See `python_api_diffs.md` for code snippets per pair and `caravan_abstraction_v2.md` §4 for the canonical T0/T1/T2 derivation.
 
 ---
 
-See `mapping_aws_to_python.md` for the reverse direction (which container plays the AWS role in dev) and `python_api_diffs.md` for the per-pair Python code diff. Conceptual home: `thesis.md`. Long-form derivation: `supeux_abstraction_v2.md`.
+See `mapping_aws_to_python.md` for the reverse direction (which container plays the AWS role in dev) and `python_api_diffs.md` for the per-pair Python code diff. Conceptual home: `thesis.md`. Long-form derivation: `caravan_abstraction_v2.md`.

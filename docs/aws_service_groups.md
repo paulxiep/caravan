@@ -25,7 +25,7 @@ Every per-service table below also carries a `Tier` column with one of `T0` / `T
 
 # At-a-glance tier rollup
 
-The `T0 / T1 / T2` framing is load-bearing in `thesis.md` ("Service tiers" under Current evaluation) and `supeux_abstraction_v2.md` §4. Recap:
+The `T0 / T1 / T2` framing is load-bearing in `thesis.md` ("Service tiers" under Current evaluation) and `caravan_abstraction_v2.md` §4. Recap:
 
 - **T0** — same wire API both sides; endpoint-URL or DSN env-var swap in user code suffices. No abstraction library required. Container-shaped compute primitives also sit here (one image, runs locally as docker-compose service or in cloud as Fargate / App Runner / Lambda).
 - **T1** — different wire APIs cloud vs local; a structural abstraction layer is required (per the thesis stable design principle). Mature community libraries cover the well-known pairs (rig-core / litellm for LLMs; jsonwebtoken + JWKS for token verify; lettre / smtplib for email; whisper crates for STT; OpenCV / yolov8 for image analysis).
@@ -622,11 +622,11 @@ See **§Tier 2 deep-dive** below for each truly-niche entry's use case and pract
 
 # Tier 2 deep-dive
 
-## What "Tier 2" means in supeux terms
+## What "Tier 2" means in caravan terms
 
-Tier 2 means no OSS container reproduces the service locally. For the user's **runtime** story this is already solved — user container code calls the AWS SDK directly with mounted IAM creds, which works identically whether the container runs locally (docker `~/.aws` bind-mount or `AWS_PROFILE` env var) or on Fargate / Lambda (task role / execution role auto-injected). No supeux runtime abstraction is needed.
+Tier 2 means no OSS container reproduces the service locally. For the user's **runtime** story this is already solved — user container code calls the AWS SDK directly with mounted IAM creds, which works identically whether the container runs locally (docker `~/.aws` bind-mount or `AWS_PROFILE` env var) or on Fargate / Lambda (task role / execution role auto-injected). No caravan runtime abstraction is needed.
 
-The only open question per service is the **provisioning** story: does its config shape fit a short `cloud_only:` yaml block (worth a registry slot), or is the config big / dynamic enough that hand-written `.tf` via the `terraform-module` escape hatch (`supeux_abstraction_v2.md` §2) is more honest? The sub-grouping below splits Tier 2 by *why* it's niche; the per-service paragraphs that follow judge each truly-niche entry on one of three verdicts:
+The only open question per service is the **provisioning** story: does its config shape fit a short `cloud_only:` yaml block (worth a registry slot), or is the config big / dynamic enough that hand-written `.tf` via the `terraform-module` escape hatch (`caravan_abstraction_v2.md` §2) is more honest? The sub-grouping below splits Tier 2 by *why* it's niche; the per-service paragraphs that follow judge each truly-niche entry on one of three verdicts:
 
 - **`yaml-registry`** — config fits a short `cloud_only:` block (model ID + a few knobs). Ship a registry entry.
 - **`hand-tf`** — config is too large / dynamic for short yaml (entity graphs, ASL bodies, recipe configs). Document the SDK call pattern, route to `resources.<name>: { type: terraform-module, source: ./modules/foo }`.
@@ -654,12 +654,12 @@ The eight buckets are oriented around what makes the service unreachable from a 
 - CloudFront — universal CDN
 - Bedrock Knowledge Bases — RAG is mainstream in 2026
 - DynamoDB Global Tables — anyone going multi-region
-- Lambda@Edge — common in CDN-heavy apps (covered below as niche by some lenses; included here as common in supeux's expected audience)
+- Lambda@Edge — common in CDN-heavy apps (covered below as niche by some lenses; included here as common in caravan's expected audience)
 - CloudWatch Alarms / CloudTrail / IAM enforcement / Cognito Identity Pools — universal supporting infra
 - AppSync — common in GraphQL-shop deployments
 - Step Functions Standard (single state machine) — common workflow surface
 
-**Truly-niche Tier 2** — the entries deep-dived below. Narrow-vertical, low-adoption, deprecated, or otherwise outside what supeux's expected audience touches by default.
+**Truly-niche Tier 2** — the entries deep-dived below. Narrow-vertical, low-adoption, deprecated, or otherwise outside what caravan's expected audience touches by default.
 
 ## Per-niche-service paragraphs and practicality verdicts
 
@@ -691,7 +691,7 @@ Sub-ms JS at the viewer hook for trivial header / URL rewrites and cache-key twe
 
 Multi-region active-active Postgres-flavored SQL for apps that genuinely need cross-region writes (regulated industries with data-residency + multi-region availability requirements). Premium-priced and SQL-feature-limited compared to vanilla Aurora; most teams shouldn't reach for it.
 
-**Practicality: `yaml-registry`** — already covered by `tier: global` on the `db.sql` primitive per `supeux_abstraction_v2.md` §6. No new shape needed.
+**Practicality: `yaml-registry`** — already covered by `tier: global` on the `db.sql` primitive per `caravan_abstraction_v2.md` §6. No new shape needed.
 
 #### Step Functions Distributed Map
 
@@ -803,7 +803,7 @@ SQL-shaped routing from IoT Core MQTT topics to other AWS services (Kinesis, Lam
 
 Connectivity module SDK for hardware-vendor microcontrollers (Espressif, Infineon, etc.) — abstracts the cellular / WiFi / TLS layer so device firmware can talk to IoT Core without a full TCP stack.
 
-**Practicality: `skip`** — device-firmware concern, outside supeux's deploy-tool scope.
+**Practicality: `skip`** — device-firmware concern, outside caravan's deploy-tool scope.
 
 ### Specialty storage variants — niche
 
@@ -811,7 +811,7 @@ Connectivity module SDK for hardware-vendor microcontrollers (Espressif, Infineo
 
 Single-AZ, high-RPS S3 variant — <10 ms p99, 7× pricier per GB. Reached by ML training shuffle, analytics scratch, and other "lots of small reads per second per prefix" workloads bottlenecked by S3 Standard's per-prefix throughput ceiling.
 
-**Practicality: `yaml-registry`** — already covered by `bucket: variant: express-one-zone` per `supeux_abstraction_v2.md` §6 vocabulary.
+**Practicality: `yaml-registry`** — already covered by `bucket: variant: express-one-zone` per `caravan_abstraction_v2.md` §6 vocabulary.
 
 #### S3 Vectors
 
@@ -1001,7 +1001,7 @@ Snapshot-restore mechanism to cut Java / .NET / Python Lambda cold-starts. Reach
 
 ## Runtime story for niche Tier 2 services (recap)
 
-Regardless of the per-service verdict above, the user's **runtime code path** for any niche Tier 2 service is unchanged: call the AWS SDK from inside the service container with mounted creds. This works identically whether the container runs locally (docker `~/.aws` bind-mount or `AWS_PROFILE` env var) or on Fargate / Lambda (task role / execution role auto-injected by AWS). The verdict only determines whether supeux ships an opinionated yaml shortcut for the **provisioning** side, or sends the user to the v2 §2 escape hatch:
+Regardless of the per-service verdict above, the user's **runtime code path** for any niche Tier 2 service is unchanged: call the AWS SDK from inside the service container with mounted creds. This works identically whether the container runs locally (docker `~/.aws` bind-mount or `AWS_PROFILE` env var) or on Fargate / Lambda (task role / execution role auto-injected by AWS). The verdict only determines whether caravan ships an opinionated yaml shortcut for the **provisioning** side, or sends the user to the v2 §2 escape hatch:
 
 ```yaml
 resources:
@@ -1023,7 +1023,7 @@ Six patterns recur across groups and matter for File 5's recommendation:
 2. **A handful of services dominate by cost-sensitivity:** Lambda, S3, DynamoDB, SQS, SNS, CloudWatch Logs, EC2, RDS/Aurora. These are also the most stable APIs — the obvious targets for cloud↔local abstraction.
 3. **Cognito, Step Functions, EventBridge, AppSync, SageMaker, Bedrock have no realistic local-container parity.** They're either AWS-specific protocols or proprietary models. Local emulation is best-effort at best. See **§Tier 2 deep-dive** above for the full sub-grouping, common-vs-niche split, and per-niche-service practicality verdict.
 4. **Many "managed" services are wire-compatible with OSS engines**: Postgres on RDS, MySQL on RDS, Mongo on DocumentDB (mostly), Redis on ElastiCache, Kafka on MSK, Elasticsearch-API on OpenSearch. This is the cheap abstraction zone.
-5. **The cost shape predicts how supeux's "switch to cloud" yaml should behave**: per-request services (Lambda, DynamoDB on-demand, SQS) are friendly to cloud-by-default; per-hour services (RDS, ElastiCache, OpenSearch) are unfriendly to "spin up for CI" — supeux needs an *off-by-default* policy for those.
+5. **The cost shape predicts how caravan's "switch to cloud" yaml should behave**: per-request services (Lambda, DynamoDB on-demand, SQS) are friendly to cloud-by-default; per-hour services (RDS, ElastiCache, OpenSearch) are unfriendly to "spin up for CI" — caravan needs an *off-by-default* policy for those.
 6. **The Tier 2 niche set bifurcates by provisioning shape, not runtime difficulty.** All Tier 2 services are runtime-solved by mounted creds + AWS SDK from inside the user's container (works identically local / Fargate / Lambda). The only design question per service is whether its HCL fits a short `cloud_only:` yaml shortcut (`yaml-registry`) or is better left to the `terraform-module` escape hatch (`hand-tf`) — or omitted entirely (`skip`). See **§Tier 2 deep-dive** above.
 
 These feed directly into File 5's PoC scope recommendation.

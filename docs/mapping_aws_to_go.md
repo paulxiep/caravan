@@ -2,7 +2,7 @@
 
 > **Snapshot date: 2026-05-16.** References `aws_service_groups.md` for AWS-side detail and `mapping_go_to_aws.md` for the reverse direction.
 > **Scope**: Go ecosystem (Go 1.22+). "Wire-compatible" means *the official `aws-sdk-go-v2/service/*` package (or relevant driver) talks to a local container via a `BaseEndpoint` setting or DSN swap without code changes*. Python, Rust, and TypeScript mirrors live in `mapping_aws_to_python.md` / `mapping_aws_to_rust.md` / `mapping_aws_to_typescript.md`.
-> **Framing**: Go ecosystem evidence feeding into `thesis.md` (conceptual home) and `supeux_abstraction_v4.md` (long-form derivation; supersedes v3). The emulation-quality bands below are **orthogonal to v4's T0/T1/T2 service tiers** — see the note after the bands table.
+> **Framing**: Go ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v4.md` (long-form derivation; supersedes v3). The emulation-quality bands below are **orthogonal to v4's T0/T1/T2 service tiers** — see the note after the bands table.
 
 This file answers: *"I picked an AWS service. What container do I run alongside my Go app so the same code talks to it without knowing the difference?"*
 
@@ -52,7 +52,7 @@ The two axes describe different things:
 | **Emulation quality** | not measured here directly | wire-compatible / behavior-compatible / partial / none viable |
 | **v4 T0/T1/T2 tier** | T0 = yes (env-var swap is enough); T1 = no (need a community library to bridge); T2 = no AND no OSS engine | not measured |
 
-Loose correspondence: most **wire-compatible** + most **behavior-compatible** entries below are **T0**. **partial** entries split — some are still T0 with a few caveats (DocumentDB ≈ Mongo for happy paths), others become **T1** when a community library (`langchaingo` / `eino` for Bedrock, `golang-jwt` + `MicahParks/keyfunc` for Cognito token-verify, `net/smtp` / `gomail` for SES) is what unifies the code. **none viable** is always **T2** — supeux marks `cloud_only:` and the user picks one of v4 §4's four patterns (skip / hit-real / engine-swap / stub).
+Loose correspondence: most **wire-compatible** + most **behavior-compatible** entries below are **T0**. **partial** entries split — some are still T0 with a few caveats (DocumentDB ≈ Mongo for happy paths), others become **T1** when a community library (`langchaingo` / `eino` for Bedrock, `golang-jwt` + `MicahParks/keyfunc` for Cognito token-verify, `net/smtp` / `gomail` for SES) is what unifies the code. **none viable** is always **T2** — caravan marks `cloud_only:` and the user picks one of v4 §4's four patterns (skip / hit-real / engine-swap / stub).
 
 ---
 
@@ -135,7 +135,7 @@ func main() {
 }
 ```
 
-Same container image, two `shape:` values; supeux generates `aws_lambda_function` Terraform vs `aws_ecs_service` Terraform around the same image. The user wraps the handler ABI in `aws-lambda-go-api-proxy` — that wrapper is user code, not supeux code. `aws-lambda-go-api-proxy` is the closest Go parallel to TS's `serverless-http`: a single adapter library with sub-packages for the major routers (chi, gin, echo, fiber, gorilla/mux, `net/http`).
+Same container image, two `shape:` values; caravan generates `aws_lambda_function` Terraform vs `aws_ecs_service` Terraform around the same image. The user wraps the handler ABI in `aws-lambda-go-api-proxy` — that wrapper is user code, not caravan code. `aws-lambda-go-api-proxy` is the closest Go parallel to TS's `serverless-http`: a single adapter library with sub-packages for the major routers (chi, gin, echo, fiber, gorilla/mux, `net/http`).
 
 ---
 
@@ -616,7 +616,7 @@ if os.Getenv("LLM_BACKEND") == "bedrock" {
 }
 ```
 
-**Decision criterion**: `langchaingo` if you want the largest provider catalog or are porting Python LangChain code; `eino` if you want a more Go-idiomatic typed-graph composition model and your provider needs are well-covered by its (smaller) set. Both are actively maintained as of 2026. The previously common pattern of hand-rolling an `LLMClient` interface with `BedrockLLM` + `OllamaLLM` impls is the v1-era prescription — v4 §4 explicitly states that supeux does not ship runtime adapter libraries when mature community libraries already cover the abstraction. Bedrock Knowledge Bases / Agents / Guardrails remain `cloud_only` (T2) — neither library bridges those.
+**Decision criterion**: `langchaingo` if you want the largest provider catalog or are porting Python LangChain code; `eino` if you want a more Go-idiomatic typed-graph composition model and your provider needs are well-covered by its (smaller) set. Both are actively maintained as of 2026. The previously common pattern of hand-rolling an `LLMClient` interface with `BedrockLLM` + `OllamaLLM` impls is the v1-era prescription — v4 §4 explicitly states that caravan does not ship runtime adapter libraries when mature community libraries already cover the abstraction. Bedrock Knowledge Bases / Agents / Guardrails remain `cloud_only` (T2) — neither library bridges those.
 
 ---
 
@@ -660,15 +660,15 @@ if os.Getenv("LLM_BACKEND") == "bedrock" {
   - **Token verification** — `golang-jwt/jwt/v5` + `MicahParks/keyfunc/v3` for JWKS handling parallels `jose` (TS) / `authlib` (Python) / `jsonwebtoken` (Rust).
   - **Email** — two community paths: `net/smtp` (stdlib, minimalist) or `gomail` (community wrapper, MIME-friendly). Either covers cloud↔local with env-driven SMTP host.
 
-**Implications for supeux** (developed in `supeux_abstraction_v4.md`):
-- The ~23 wire-or-behavior-compatible services map to **v4 Tier 0** — supeux's job is env-var injection (endpoint URL or DSN). No abstraction library, no runtime SDK.
-- The ~24 partial services split. Those with a mature Go community library (Cognito token verify → `golang-jwt` + `keyfunc`; SES → `net/smtp` or `gomail`; Bedrock LLM core → `langchaingo` or `eino`; Whisper-shaped STT → `whisper.cpp` Go bindings) are **v4 Tier 1** — supeux documents which library to import; the abstraction lives in user code via that library. Those without a clean community bridge (advanced API Gateway features, EventBridge schema registry, etc.) stay close to cloud-only.
-- The ~15 none-viable services are **v4 Tier 2** — `cloud_only:` in the IR. supeux refuses to generate a local stand-in; user picks one of v4 §4's four patterns (skip / hit-real / engine-swap / stub) per service.
+**Implications for caravan** (developed in `caravan_abstraction_v4.md`):
+- The ~23 wire-or-behavior-compatible services map to **v4 Tier 0** — caravan's job is env-var injection (endpoint URL or DSN). No abstraction library, no runtime SDK.
+- The ~24 partial services split. Those with a mature Go community library (Cognito token verify → `golang-jwt` + `keyfunc`; SES → `net/smtp` or `gomail`; Bedrock LLM core → `langchaingo` or `eino`; Whisper-shaped STT → `whisper.cpp` Go bindings) are **v4 Tier 1** — caravan documents which library to import; the abstraction lives in user code via that library. Those without a clean community bridge (advanced API Gateway features, EventBridge schema registry, etc.) stay close to cloud-only.
+- The ~15 none-viable services are **v4 Tier 2** — `cloud_only:` in the IR. caravan refuses to generate a local stand-in; user picks one of v4 §4's four patterns (skip / hit-real / engine-swap / stub) per service.
 
 **Go-side IaC tooling context (anchors v4 §5 / §7d reasoning)**:
 - **cdktf-go** (Cloud Development Kit for Terraform, Go binding) was sunset and archived **December 10, 2025** by HashiCorp/IBM along with the rest of CDKtf, citing "no product-market fit at scale" — see the [HashiCorp CDKtf page](https://developer.hashicorp.com/terraform/cdktf). As of 2026 the project is archived and read-only; no further updates ship. HashiCorp directs former CDKtf users to HCL, Pulumi, or AWS CDK.
-- **Pulumi-Go** remains available and well-supported, and is the language for supeux's CLI internals per `thesis.md:63` ("If HCL expressiveness becomes the binding constraint, Pulumi-Go-as-CLI-internal is the next move"). It emits resources via imperative Go code rather than reviewable HCL artifacts — security/compliance teams typically prefer the latter for production deploys, which is why supeux emits HCL today.
+- **Pulumi-Go** remains available and well-supported, and is the language for caravan's CLI internals per `thesis.md:63` ("If HCL expressiveness becomes the binding constraint, Pulumi-Go-as-CLI-internal is the next move"). It emits resources via imperative Go code rather than reviewable HCL artifacts — security/compliance teams typically prefer the latter for production deploys, which is why caravan emits HCL today.
 - **AWS CDK** (Go preview) emits CloudFormation, not Terraform/HCL; it ties users to AWS and to an opaque-by-default deploy artifact.
-- **Net**: as of 2026 there is no first-party HCL-emitting-from-Go toolchain. supeux fills that gap polyglot-first by emitting HCL from yaml — and supeux's CLI itself being Go (per `thesis.md:63`) makes Go's IaC story doubly load-bearing: Go is both a first-class user-code language and the CLI implementation language. See `supeux_abstraction_v4.md` §5, §7d.
+- **Net**: as of 2026 there is no first-party HCL-emitting-from-Go toolchain. caravan fills that gap polyglot-first by emitting HCL from yaml — and caravan's CLI itself being Go (per `thesis.md:63`) makes Go's IaC story doubly load-bearing: Go is both a first-class user-code language and the CLI implementation language. See `caravan_abstraction_v4.md` §5, §7d.
 
-See `go_api_diffs.md` for the actual code-diff per pair. Conceptual home: `thesis.md`. Long-form derivation of T0/T1/T2 and the v1 PoC scope: `supeux_abstraction_v4.md` (supersedes v3).
+See `go_api_diffs.md` for the actual code-diff per pair. Conceptual home: `thesis.md`. Long-form derivation of T0/T1/T2 and the v1 PoC scope: `caravan_abstraction_v4.md` (supersedes v3).

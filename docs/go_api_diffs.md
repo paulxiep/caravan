@@ -1,18 +1,18 @@
 # Go API Diffs: AWS ↔ Local Container
 
 > **Snapshot date: 2026-05-16.** References `aws_service_groups.md`, `mapping_go_to_aws.md`, `mapping_aws_to_go.md`.
-> **Framing**: Go ecosystem evidence feeding into `thesis.md` (conceptual home) and `supeux_abstraction_v4.md` (long-form derivation; supersedes v3). The difficulty bands below map onto v4's T0/T1/T2 service tiers — see the row at the bottom of the bands table.
+> **Framing**: Go ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v4.md` (long-form derivation; supersedes v3). The difficulty bands below map onto v4's T0/T1/T2 service tiers — see the row at the bottom of the bands table.
 
 For each AWS↔local pair surfaced in the mapping files, this file shows the exact Go code change required to switch between them and assigns a **difficulty band**:
 
-| Band | Meaning | What supeux does | v4 tier |
+| Band | Meaning | What caravan does | v4 tier |
 |---|---|---|---|
 | **Trivial** | One env var (endpoint URL or DSN) controls the switch. Same imports, same calls. | Sets env vars at deploy. Done. | **T0** |
 | **Moderate** | Same library, but a few config keys or call shapes differ; or a small adapter (framework Lambda wrapper, env-driven branches) closes the gap. | Documents the adapter shape. Usually no library needed. | **T0** (mostly); occasionally T1 |
-| **Hard** | Different wire APIs cloud vs local; a structural abstraction is required. | **Uses the recommended Go community library** — `langchaingo` *or* `eino` for LLMs, `golang-jwt` + `keyfunc` for token verification, `net/smtp` *or* `gomail` for email, `whisper.cpp` Go bindings for Whisper-shaped STT. supeux **does not ship** a runtime adapter library; see v4 §4. | **T1** |
+| **Hard** | Different wire APIs cloud vs local; a structural abstraction is required. | **Uses the recommended Go community library** — `langchaingo` *or* `eino` for LLMs, `golang-jwt` + `keyfunc` for token verification, `net/smtp` *or* `gomail` for email, `whisper.cpp` Go bindings for Whisper-shaped STT. caravan **does not ship** a runtime adapter library; see v4 §4. | **T1** |
 | **Intractable** | No realistic local equivalent. Don't try to emulate — false positives hide bugs. | Marks `cloud_only:` in the yaml IR (v4 §6, §8). User picks one of v4's four patterns per service: **skip** (feature-flag off locally), **hit-real** (mounted creds; pay real $$), **engine-swap** (DAX→DDB-local, S3 Vectors→hnsw, etc.), or **stub**. | **T2** |
 
-Snippets are ≤15 lines each and assume `os.Getenv` is populated by the supeux runtime / docker-compose / GHA matrix. **Build context**: snippets assume `CGO_ENABLED=0 GOOS=linux go build` static binaries unless CGO is explicitly required (flagged per snippet).
+Snippets are ≤15 lines each and assume `os.Getenv` is populated by the caravan runtime / docker-compose / GHA matrix. **Build context**: snippets assume `CGO_ENABLED=0 GOOS=linux go build` static binaries unless CGO is explicitly required (flagged per snippet).
 
 Imports are abbreviated in some snippets (typical Go conventions: `aws.String`, `aws.ToString`, `ctx`); full import blocks shown only when load-bearing.
 
@@ -398,7 +398,7 @@ ciphertext := out.CiphertextBlob
 
 ## "One container, two shapes" — chi (recommended modern default)
 
-Per v4 §3 / §9, Lambda is one `shape:` of the `service` primitive — not a separate primitive. supeux generates `aws_lambda_function` Terraform around the same container image when `shape: function`, or `aws_ecs_service` Terraform when `shape: long-running`. The user's container handles the ABI in framework-idiomatic code.
+Per v4 §3 / §9, Lambda is one `shape:` of the `service` primitive — not a separate primitive. caravan generates `aws_lambda_function` Terraform around the same container image when `shape: function`, or `aws_ecs_service` Terraform when `shape: long-running`. The user's container handles the ABI in framework-idiomatic code.
 
 ```go
 package main
@@ -424,7 +424,7 @@ func main() {
     }
 }
 ```
-**Verdict: Moderate (T0 in v4's tier system).** The seam is one `if` statement; the same container deploys both ways. `aws-lambda-go-api-proxy` is the Go closest analogue to TS's `serverless-http` — a single adapter library with sub-packages per router. supeux's only job is to inject env vars the same way it does for any other service.
+**Verdict: Moderate (T0 in v4's tier system).** The seam is one `if` statement; the same container deploys both ways. `aws-lambda-go-api-proxy` is the Go closest analogue to TS's `serverless-http` — a single adapter library with sub-packages per router. caravan's only job is to inject env vars the same way it does for any other service.
 
 ## "One container, two shapes" — gin
 
@@ -472,7 +472,7 @@ func main() {
 ```
 **Verdict: Moderate.** Performant, mature middleware ecosystem, first-party-feeling Lambda story via the adapter. Middle pick between chi (idiomatic minimal) and gin (opinionated convenient).
 
-**Constraints inherited from Lambda regardless of framework**: websockets need API Gateway WebSocket (separate primitive, deferred to v1.1+); streaming responses need Lambda Function URLs with response streaming on; per-cold-start startup runs `init()` funcs + package-level vars. None are supeux concerns — they're Lambda properties.
+**Constraints inherited from Lambda regardless of framework**: websockets need API Gateway WebSocket (separate primitive, deferred to v1.1+); streaming responses need Lambda Function URLs with response streaming on; per-cold-start startup runs `init()` funcs + package-level vars. None are caravan concerns — they're Lambda properties.
 
 **Go cold-start advantage**: Go custom-runtime cold-starts of 10–50 ms make Lambda viable for many APIs where Python's 500–1500 ms would push toward Fargate. The cold-start objection that drives Python+Node teams off Lambda barely applies to Go.
 
@@ -527,7 +527,7 @@ _, _ = c.AddFunc("0 2 * * *", func() {
 c.Start()
 select {}
 ```
-**Verdict: Moderate.** Handler code is the same; only the trigger differs. supeux generates an EventBridge Scheduler rule from a yaml `triggers:` declaration and skips the local-side scheduler container by default — most dev sessions don't need cron firing.
+**Verdict: Moderate.** Handler code is the same; only the trigger differs. caravan generates an EventBridge Scheduler rule from a yaml `triggers:` declaration and skips the local-side scheduler container by default — most dev sessions don't need cron firing.
 
 ## X-Ray tracing (cloud) vs Jaeger (local) via OpenTelemetry
 
@@ -601,7 +601,7 @@ func verifyToken(raw string) (jwt.MapClaims, error) {
 }
 ```
 
-**Verdict: Hard band → v4 Tier 1.** Cognito's *token issuance* surface (JWKS-served RS256) is a well-defined standard; `golang-jwt` + `keyfunc` hide the cloud↔local difference behind one JWKS URL env var. Cognito's *user lifecycle* (sign-up confirmation, MFA flows, custom attribute admin, hosted UI) has no portable abstraction and stays cloud-only per v4 §8: don't fake admin paths; either skip in local dev or hit real Cognito via mounted creds. **supeux does not ship `TokenVerifier` / `CognitoVerifier` / `LocalJwtVerifier`** — v4 §4 explicitly defers to `golang-jwt` + `keyfunc`.
+**Verdict: Hard band → v4 Tier 1.** Cognito's *token issuance* surface (JWKS-served RS256) is a well-defined standard; `golang-jwt` + `keyfunc` hide the cloud↔local difference behind one JWKS URL env var. Cognito's *user lifecycle* (sign-up confirmation, MFA flows, custom attribute admin, hosted UI) has no portable abstraction and stays cloud-only per v4 §8: don't fake admin paths; either skip in local dev or hit real Cognito via mounted creds. **caravan does not ship `TokenVerifier` / `CognitoVerifier` / `LocalJwtVerifier`** — v4 §4 explicitly defers to `golang-jwt` + `keyfunc`.
 
 ## API Gateway WebSocket (cloud) vs `gorilla/websocket` (local)
 
@@ -641,7 +641,7 @@ http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
     }
 })
 ```
-**Verdict: Hard.** API Gateway WebSocket inverts the connection model: connections are *stored* (in DynamoDB), and you push to them via REST (`PostToConnection`). `gorilla/websocket` is stateful per-process. There is no shared abstraction; supeux picks one model and documents the trade-off. For real-time apps, ECS Fargate + `gorilla/websocket` is the saner cloud target.
+**Verdict: Hard.** API Gateway WebSocket inverts the connection model: connections are *stored* (in DynamoDB), and you push to them via REST (`PostToConnection`). `gorilla/websocket` is stateful per-process. There is no shared abstraction; caravan picks one model and documents the trade-off. For real-time apps, ECS Fargate + `gorilla/websocket` is the saner cloud target.
 
 ## Step Functions Standard (cloud) vs asynq/river flows (local)
 
@@ -660,8 +660,8 @@ c := asynq.NewClient(asynq.RedisClientOpt{Addr: "redis:6379"})
 _, _ = c.Enqueue(asynq.NewTask("order:validate", payload))
 ```
 **Verdict: Hard.** Step Functions has durable state, retry policy DSL, parallel branches, human approval steps. Go OSS doesn't have an equivalent workflow engine at parity. Either:
-- (a) supeux defines workflows in a DSL and emits ASL for cloud / asynq chain for local, **or**
-- (b) supeux only supports workflows on cloud and documents "no local equivalent — test against `aws-stepfunctions-local`."
+- (a) caravan defines workflows in a DSL and emits ASL for cloud / asynq chain for local, **or**
+- (b) caravan only supports workflows on cloud and documents "no local equivalent — test against `aws-stepfunctions-local`."
 
 (b) is the recommendation — synthesizing two backends doubles the surface area for limited benefit.
 
@@ -690,7 +690,7 @@ func handler(ctx context.Context, e events.SQSEvent) error {
 // Local: goroutine (lossy — dies with the process)
 go func() { _ = processOrder(order) }()
 ```
-**Verdict: Hard if you care about local-vs-cloud durability.** Bare goroutines die with the process. supeux's option is to run a local `asynq` (Redis-backed) or `river` (Postgres-backed) worker + ElasticMQ — keeping the *queue* abstraction honest both sides. That's the recommended pattern.
+**Verdict: Hard if you care about local-vs-cloud durability.** Bare goroutines die with the process. caravan's option is to run a local `asynq` (Redis-backed) or `river` (Postgres-backed) worker + ElasticMQ — keeping the *queue* abstraction honest both sides. That's the recommended pattern.
 
 ## Bedrock (cloud) vs Ollama (local) — `langchaingo` or `eino` is the abstraction
 
@@ -730,7 +730,7 @@ if os.Getenv("LLM_BACKEND") == "bedrock" {
     m, _ = eo.NewChatModel(ctx, &eo.ChatModelConfig{Model: os.Getenv("LLM_MODEL")})
 }
 ```
-**Verdict: Moderate plumbing — Hard band → v4 Tier 1.** Both libraries handle per-provider request/response shaping; user code is unchanged across deployments. **supeux does not ship `LLMClient` / `BedrockLLM` / `OllamaLLM`** — that was the v1 prescription; v4 §4 explicitly defers to community libraries. **Output equivalence is not promised** — Claude Opus 4.7 and Llama 3.1 are different models; local tests are plumbing-level, real Bedrock tests are output-quality.
+**Verdict: Moderate plumbing — Hard band → v4 Tier 1.** Both libraries handle per-provider request/response shaping; user code is unchanged across deployments. **caravan does not ship `LLMClient` / `BedrockLLM` / `OllamaLLM`** — that was the v1 prescription; v4 §4 explicitly defers to community libraries. **Output equivalence is not promised** — Claude Opus 4.7 and Llama 3.1 are different models; local tests are plumbing-level, real Bedrock tests are output-quality.
 
 **Decision criterion (langchaingo vs eino)**: pick `langchaingo` for breadth (more providers, LangChain-ecosystem code-porting); pick `eino` for Go-idiomatic typed-graph composition and CloudWeGo's tooling. Both maintained as of 2026.
 
@@ -767,7 +767,7 @@ for {
 
 # Intractable — no realistic local equivalent
 
-For these, supeux must mark `cloud_only: true` and refuse to bind locally. Trying to emulate is worse than not — false positives hide bugs.
+For these, caravan must mark `cloud_only: true` and refuse to bind locally. Trying to emulate is worse than not — false positives hide bugs.
 
 ## SageMaker training / inference
 
@@ -881,8 +881,8 @@ CloudFront Functions / Lambda@Edge are **Node-only** at the edge runtime — no 
 | IoT — Analytics | IoT Analytics / SiteWise / etc | (none) | Intractable | **T2** |
 
 **Headcount (per v4's tier semantics)**:
-- **T0**: ~22 pairs — env-var swap is enough; no abstraction library required. supeux's bread and butter.
-- **T1**: ~5 pairs — community libraries cover them (**`langchaingo`** *or* **`eino`**, **`golang-jwt` + `keyfunc`**, **`net/smtp`** *or* **`gomail`**, **`whisper.cpp/bindings/go`**, optionally an interface around vision SDKs). supeux **does not ship** a runtime adapter library; v4 §4 documents which library per pair.
+- **T0**: ~22 pairs — env-var swap is enough; no abstraction library required. caravan's bread and butter.
+- **T1**: ~5 pairs — community libraries cover them (**`langchaingo`** *or* **`eino`**, **`golang-jwt` + `keyfunc`**, **`net/smtp`** *or* **`gomail`**, **`whisper.cpp/bindings/go`**, optionally an interface around vision SDKs). caravan **does not ship** a runtime adapter library; v4 §4 documents which library per pair.
 - **T2**: ~15 pairs — `cloud_only:` in the IR. User picks one of v4 §4's four patterns: skip / hit-real / engine-swap / stub.
 
 The remaining ~12 entries are Moderate-band T0s where a small adapter (framework Lambda wrapper, OTel exporter env var, asynq backend swap) closes the gap without needing a community library.
@@ -898,4 +898,4 @@ The remaining ~12 entries are Moderate-band T0s where a small adapter (framework
 
 Net result: Go is a first-class target for the *containers-first* abstraction shape, with the **best Lambda cold-start story, smallest images, cleanest MSK-IAM integration, and a native Cedar implementation** of the four languages. The two-option Tier 1 surface for LLM and email is the only ergonomic divergence from the one-canonical-library pattern in TS/Python/Rust — and v4 documents both.
 
-See `supeux_abstraction_v4.md` for how these tiers translate into v1 PoC scope, IR primitives, and the yaml switch shape. Conceptual home: `thesis.md`.
+See `caravan_abstraction_v4.md` for how these tiers translate into v1 PoC scope, IR primitives, and the yaml switch shape. Conceptual home: `thesis.md`.

@@ -2,7 +2,7 @@
 
 > **Snapshot date: 2026-05-16.** References `aws_service_groups.md` for AWS-side detail and `mapping_typescript_to_aws.md` for the reverse direction.
 > **Scope**: TypeScript / JavaScript ecosystem. "Wire-compatible" means *the official `@aws-sdk/client-*` package (or relevant driver) talks to a local container via an `endpoint` config option or DSN swap without code changes*. Python and Rust mirrors live in `mapping_aws_to_python.md` / `mapping_aws_to_rust.md`.
-> **Framing**: TypeScript ecosystem evidence feeding into `thesis.md` (conceptual home) and `supeux_abstraction_v3.md` (long-form derivation; supersedes v2). The emulation-quality bands below are **orthogonal to v3's T0/T1/T2 service tiers** — see the note after the bands table.
+> **Framing**: TypeScript ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v3.md` (long-form derivation; supersedes v2). The emulation-quality bands below are **orthogonal to v3's T0/T1/T2 service tiers** — see the note after the bands table.
 
 This file answers: *"I picked an AWS service. What container do I run alongside my TypeScript app so the same code talks to it without knowing the difference?"*
 
@@ -42,7 +42,7 @@ The two axes describe different things:
 | **Emulation quality** | not measured here directly | wire-compatible / behavior-compatible / partial / none viable |
 | **v3 T0/T1/T2 tier** | T0 = yes (env-var swap is enough); T1 = no (need a community library to bridge); T2 = no AND no OSS engine | not measured |
 
-Loose correspondence: most **wire-compatible** + most **behavior-compatible** entries below are **T0**. **partial** entries split — some are still T0 with a few caveats (DocumentDB ≈ Mongo for happy paths), others become **T1** when a community library (Vercel AI SDK for Bedrock, `jose` for Cognito token-verify, `nodemailer` for SES, `@xenova/transformers` for Whisper-shaped STT) is what unifies the code. **none viable** is always **T2** — supeux marks `cloud_only:` and the user picks one of v3 §4's four patterns (skip / hit-real / engine-swap / stub).
+Loose correspondence: most **wire-compatible** + most **behavior-compatible** entries below are **T0**. **partial** entries split — some are still T0 with a few caveats (DocumentDB ≈ Mongo for happy paths), others become **T1** when a community library (Vercel AI SDK for Bedrock, `jose` for Cognito token-verify, `nodemailer` for SES, `@xenova/transformers` for Whisper-shaped STT) is what unifies the code. **none viable** is always **T2** — caravan marks `cloud_only:` and the user picks one of v3 §4's four patterns (skip / hit-real / engine-swap / stub).
 
 ---
 
@@ -92,7 +92,7 @@ export const handler = awsLambdaFastify(app);
 if (!process.env.AWS_LAMBDA_RUNTIME_API) app.listen({ port: 8080, host: "0.0.0.0" });
 ```
 
-Same container image, two `shape:` values; supeux generates `aws_lambda_function` Terraform vs `aws_ecs_service` Terraform around the same image. The user wraps the handler ABI in their framework's idiomatic adapter — that wrapper is user code, not supeux code.
+Same container image, two `shape:` values; caravan generates `aws_lambda_function` Terraform vs `aws_ecs_service` Terraform around the same image. The user wraps the handler ABI in their framework's idiomatic adapter — that wrapper is user code, not caravan code.
 
 ---
 
@@ -482,7 +482,7 @@ const model = provider(process.env.LLM_MODEL ?? "llama3.1");
 const { text } = await generateText({ model, prompt: "hi" });
 ```
 
-The previously common pattern of hand-rolling an `LLMClient` interface with `BedrockLLM` + `OllamaLLM` impls is the v1-era prescription — v3 §4 explicitly states that supeux does not ship runtime adapter libraries when mature community libraries (Vercel AI SDK here) already cover the abstraction. Bedrock Knowledge Bases / Agents / Guardrails remain `cloud_only` (T2) — the AI SDK doesn't bridge those.
+The previously common pattern of hand-rolling an `LLMClient` interface with `BedrockLLM` + `OllamaLLM` impls is the v1-era prescription — v3 §4 explicitly states that caravan does not ship runtime adapter libraries when mature community libraries (Vercel AI SDK here) already cover the abstraction. Bedrock Knowledge Bases / Agents / Guardrails remain `cloud_only` (T2) — the AI SDK doesn't bridge those.
 
 ---
 
@@ -522,15 +522,15 @@ The previously common pattern of hand-rolling an `LLMClient` interface with `Bed
   - **`@xenova/transformers`** brings Whisper / CLIP / NLLB / sentiment models to plain Node via ONNX — no Python dependency.
   - **Hono** is the cleanest "one container, two shapes" framework — runs on Node, Bun, Deno, AND CloudFlare Workers; `hono/aws-lambda` is the closest analogue to Rust's `lambda_http`.
 
-**Implications for supeux** (developed in `supeux_abstraction_v3.md`):
-- The ~22 wire-or-behavior-compatible services map to **v3 Tier 0** — supeux's job is env-var injection (endpoint URL or DSN). No abstraction library, no runtime SDK.
-- The ~25 partial services split. Those with a mature TS community library (Cognito token verify → `jose`; SES → `nodemailer`; Bedrock LLM core → Vercel AI SDK; Whisper-shaped STT → `@xenova/transformers`) are **v3 Tier 1** — supeux documents which library to import; the abstraction lives in user code via that library. Those without a clean community bridge (advanced API Gateway features, EventBridge schema registry, etc.) stay close to cloud-only.
-- The ~15 none-viable services are **v3 Tier 2** — `cloud_only:` in the IR. supeux refuses to generate a local stand-in; user picks one of v3 §4's four patterns (skip / hit-real / engine-swap / stub) per service.
+**Implications for caravan** (developed in `caravan_abstraction_v3.md`):
+- The ~22 wire-or-behavior-compatible services map to **v3 Tier 0** — caravan's job is env-var injection (endpoint URL or DSN). No abstraction library, no runtime SDK.
+- The ~25 partial services split. Those with a mature TS community library (Cognito token verify → `jose`; SES → `nodemailer`; Bedrock LLM core → Vercel AI SDK; Whisper-shaped STT → `@xenova/transformers`) are **v3 Tier 1** — caravan documents which library to import; the abstraction lives in user code via that library. Those without a clean community bridge (advanced API Gateway features, EventBridge schema registry, etc.) stay close to cloud-only.
+- The ~15 none-viable services are **v3 Tier 2** — `cloud_only:` in the IR. caravan refuses to generate a local stand-in; user picks one of v3 §4's four patterns (skip / hit-real / engine-swap / stub) per service.
 
 **TS-side IaC tooling context (anchors v3 §5 / §7b reasoning)**:
 - **CDKtf** (`cdktf`, Cloud Development Kit for Terraform) was sunset and archived **December 10, 2025** by HashiCorp/IBM, citing "no product-market fit at scale" — see the [HashiCorp CDKtf page](https://developer.hashicorp.com/terraform/cdktf). As of 2026 the project is archived and read-only; no further updates ship. HashiCorp directs former CDKtf users to HCL, Pulumi, or AWS CDK.
 - **Pulumi-TS** remains available and well-supported, but emits resources via imperative TS code rather than reviewable HCL artifacts — security/compliance teams typically prefer the latter for production deploys.
 - **AWS CDK** (TS) emits CloudFormation, not Terraform/HCL; it ties users to AWS and to an opaque-by-default deploy artifact (synthesized CloudFormation is technically inspectable but isn't part of the workflow).
-- **Net**: as of 2026 there is no first-party HCL-emitting-from-TS toolchain. supeux fills that gap polyglot-first by emitting HCL from yaml (see `supeux_abstraction_v3.md` §5, §7b observation 3). The user's TS code remains containerized application code; no `import supeux` or imperative IaC SDK is needed.
+- **Net**: as of 2026 there is no first-party HCL-emitting-from-TS toolchain. caravan fills that gap polyglot-first by emitting HCL from yaml (see `caravan_abstraction_v3.md` §5, §7b observation 3). The user's TS code remains containerized application code; no `import caravan` or imperative IaC SDK is needed.
 
-See `typescript_api_diffs.md` for the actual code-diff per pair. Conceptual home: `thesis.md`. Long-form derivation of T0/T1/T2 and the v1 PoC scope: `supeux_abstraction_v3.md` (supersedes v2).
+See `typescript_api_diffs.md` for the actual code-diff per pair. Conceptual home: `thesis.md`. Long-form derivation of T0/T1/T2 and the v1 PoC scope: `caravan_abstraction_v3.md` (supersedes v2).

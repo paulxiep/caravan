@@ -4,14 +4,14 @@
 
 For each AWS↔local pair surfaced in the mapping files, this file shows the exact Rust code change required to switch between them and assigns a **difficulty band**:
 
-| Band | Meaning | What supeux must do |
+| Band | Meaning | What caravan must do |
 |---|---|---|
 | **Trivial** | One env var (endpoint URL or DSN) controls the switch. Same crate, same calls; type-state builder rebuild is the only verbosity tax vs Python. | Set env vars at deploy. Done. |
 | **Moderate** | Same crate, but a few config keys or call shapes differ; or a thin wrapper / adapter hides the difference. | Generate a tiny config / adapter module. |
 | **Hard** | Different paradigms (handler vs server, broker mental model). A real trait abstraction is needed. | Define a `Trait`; ship a cloud impl + local impl. |
 | **Intractable** | No realistic local equivalent. Don't try. | Mark `cloud_only: true` in the IR; refuse local binding. |
 
-Snippets are ≤15 lines each and assume `std::env` is populated by the supeux runtime / docker-compose / GHA matrix.
+Snippets are ≤15 lines each and assume `std::env` is populated by the caravan runtime / docker-compose / GHA matrix.
 
 ---
 
@@ -345,7 +345,7 @@ sched.add(Job::new_async("0 0 2 * * *", |_uuid, _l| Box::pin(async {
 }))?).await?;
 sched.start().await?;
 ```
-**Verdict: Moderate.** Handler code is the same; only the trigger differs. supeux should generate the EventBridge Scheduler rule from a yaml `triggers:` declaration and skip the local scheduler container unless explicitly enabled — most dev sessions don't need cron firing.
+**Verdict: Moderate.** Handler code is the same; only the trigger differs. caravan should generate the EventBridge Scheduler rule from a yaml `triggers:` declaration and skip the local scheduler container unless explicitly enabled — most dev sessions don't need cron firing.
 
 ## X-Ray tracing (cloud) vs Jaeger (local) via OpenTelemetry
 
@@ -433,7 +433,7 @@ impl TokenVerifier for LocalJwtVerifier {
     }
 }
 ```
-**Verdict: Hard.** Cognito's user lifecycle (sign-up, MFA, custom attributes, hosted UI) has no local equivalent. The right abstraction is *token verification*, not user management. supeux ships the `TokenVerifier` trait + `CognitoVerifier` + `LocalJwtVerifier`; user wires which based on env.
+**Verdict: Hard.** Cognito's user lifecycle (sign-up, MFA, custom attributes, hosted UI) has no local equivalent. The right abstraction is *token verification*, not user management. caravan ships the `TokenVerifier` trait + `CognitoVerifier` + `LocalJwtVerifier`; user wires which based on env.
 
 ## API Gateway WebSocket (cloud) vs axum websockets (local)
 
@@ -464,7 +464,7 @@ async fn ws_handler(ws: WebSocketUpgrade) -> Response {
     })
 }
 ```
-**Verdict: Hard.** Connection model inverts: APIGW WebSocket *stores* connections (DDB) and pushes via REST; axum websockets are stateful per-process. No shared abstraction. supeux must pick one model — for real-time apps, Fargate + axum websockets is the saner cloud target.
+**Verdict: Hard.** Connection model inverts: APIGW WebSocket *stores* connections (DDB) and pushes via REST; axum websockets are stateful per-process. No shared abstraction. caravan must pick one model — for real-time apps, Fargate + axum websockets is the saner cloud target.
 
 ## Step Functions Standard (cloud) vs Apalis chain / DAG (local)
 
@@ -483,7 +483,7 @@ async fn run_chain(order: Order) -> anyhow::Result<()> {
     Ok(())
 }
 ```
-**Verdict: Hard.** Step Functions has durable state, retry-policy DSL, parallel branches, human-approval steps. Apalis chains exist but persistence/observability is weaker. Recommendation: supeux only supports workflows on cloud and documents "no local equivalent — test against AWS or against `aws-stepfunctions-local`."
+**Verdict: Hard.** Step Functions has durable state, retry-policy DSL, parallel branches, human-approval steps. Apalis chains exist but persistence/observability is weaker. Recommendation: caravan only supports workflows on cloud and documents "no local equivalent — test against AWS or against `aws-stepfunctions-local`."
 
 ## SQS + Lambda fan-out (cloud) vs in-process tasks (local)
 
@@ -508,7 +508,7 @@ tokio::spawn(async move { process(order).await });
 
 # Intractable — no realistic local equivalent
 
-For these, supeux must mark `cloud_only: true` and refuse to bind locally. Trying to emulate is worse — false positives hide bugs.
+For these, caravan must mark `cloud_only: true` and refuse to bind locally. Trying to emulate is worse — false positives hide bugs.
 
 ## SageMaker training/inference, Bedrock LLM, Bedrock Knowledge Bases / Agents / Guardrails
 
@@ -613,7 +613,7 @@ let resp = ollama.send_chat_messages(ChatMessageRequest::new("llama3.1".into(), 
 | IoT — Analytics | IoT Analytics / SiteWise / etc | (none) | Intractable |
 
 **Headcount**:
-- **Trivial**: ~18 pairs — supeux's bread and butter for Rust.
+- **Trivial**: ~18 pairs — caravan's bread and butter for Rust.
 - **Moderate**: ~7 — adapter modules (`lambda_http` for Lambda↔axum; apalis-sqs vs apalis-redis; OTel; LlmClient trait plumbing).
 - **Hard**: ~3 — protocol traits (Cognito, WebSocket, multi-service Step Functions).
 - **Intractable**: ~18 — `cloud_only: true`.
@@ -621,4 +621,4 @@ let resp = ollama.send_chat_messages(ChatMessageRequest::new("llama3.1".into(), 
 
 **vs Python (~22 Trivial / ~12 Moderate / ~5 Hard / ~15 Intractable)**: Rust ecosystem is tighter, not weaker. Some pairs collapse from Moderate→Trivial (one binary deploys two shapes via `lambda_http`); some grow to Intractable for ecosystem reasons (Lambda@Edge has no Rust runtime, KCL has no Rust port). Net result: Rust is a first-class target for the *containers-first* abstraction shape.
 
-See `supeux_abstraction_v2.md` for how these difficulty bands translate into v2 PoC scope, IR primitives, and the yaml switch shape.
+See `caravan_abstraction_v2.md` for how these difficulty bands translate into v2 PoC scope, IR primitives, and the yaml switch shape.

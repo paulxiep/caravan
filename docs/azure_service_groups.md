@@ -27,7 +27,7 @@ Every per-service table below also carries a `Tier` column with one of `T0` / `T
 
 # At-a-glance tier rollup
 
-The `T0 / T1 / T2` framing is load-bearing in `thesis.md` ("Service tiers" under Current evaluation) and `supeux_abstraction_v2.md` §4. Recap:
+The `T0 / T1 / T2` framing is load-bearing in `thesis.md` ("Service tiers" under Current evaluation) and `caravan_abstraction_v2.md` §4. Recap:
 
 - **T0** — same wire API both sides; endpoint-URL or DSN env-var swap in user code suffices. No abstraction library required. Container-shaped compute primitives also sit here (one image, runs locally as docker-compose service or in cloud as Container Apps / App Service / AKS / Functions container image).
 - **T1** — different wire APIs cloud vs local; a structural abstraction layer is required (per the thesis stable design principle). Mature community libraries cover the well-known pairs (rig-core / litellm for LLMs; jsonwebtoken + JWKS for token verify; lettre / smtplib for email; whisper crates for STT; OpenCV / yolov8 for image analysis).
@@ -683,11 +683,11 @@ See **§Tier 2 deep-dive** below for each truly-niche entry's use case and pract
 
 # Tier 2 deep-dive
 
-## What "Tier 2" means in supeux terms
+## What "Tier 2" means in caravan terms
 
-Tier 2 means no OSS container reproduces the service locally. For the user's **runtime** story this is already solved — user container code calls the Azure SDK directly with workload-identity (Managed Identity) or `DefaultAzureCredential` (which picks up `AZURE_*` env vars, az CLI auth, or service principal env vars locally), which works identically whether the container runs locally (`DefaultAzureCredential` finds CLI creds) or on Container Apps / Functions / VMs (Managed Identity auto-injected). No supeux runtime abstraction is needed.
+Tier 2 means no OSS container reproduces the service locally. For the user's **runtime** story this is already solved — user container code calls the Azure SDK directly with workload-identity (Managed Identity) or `DefaultAzureCredential` (which picks up `AZURE_*` env vars, az CLI auth, or service principal env vars locally), which works identically whether the container runs locally (`DefaultAzureCredential` finds CLI creds) or on Container Apps / Functions / VMs (Managed Identity auto-injected). No caravan runtime abstraction is needed.
 
-The only open question per service is the **provisioning** story: does its config shape fit a short `cloud_only:` yaml block (worth a registry slot), or is the config big / dynamic enough that hand-written `.tf` via the `terraform-module` escape hatch (`supeux_abstraction_v2.md` §2) is more honest? The sub-grouping below splits Tier 2 by *why* it's niche; the per-service paragraphs that follow judge each truly-niche entry on one of three verdicts:
+The only open question per service is the **provisioning** story: does its config shape fit a short `cloud_only:` yaml block (worth a registry slot), or is the config big / dynamic enough that hand-written `.tf` via the `terraform-module` escape hatch (`caravan_abstraction_v2.md` §2) is more honest? The sub-grouping below splits Tier 2 by *why* it's niche; the per-service paragraphs that follow judge each truly-niche entry on one of three verdicts:
 
 - **`yaml-registry`** — config fits a short `cloud_only:` block (model ID + a few knobs). Ship a registry entry.
 - **`hand-tf`** — config is too large / dynamic for short yaml (entity graphs, custom IEF policies, recipe configs). Document the SDK call pattern, route to `resources.<name>: { type: terraform-module, source: ./modules/foo }`.
@@ -720,7 +720,7 @@ The eight buckets parallel the AWS file's bucketing, oriented around what makes 
 - Logic Apps Consumption (single workflow) — common workflow surface
 - Microsoft Fabric F-SKUs — common analytics surface in Microsoft-aligned shops
 
-**Truly-niche Tier 2** — the entries deep-dived below. Narrow-vertical, low-adoption, deprecated, or otherwise outside what supeux's expected audience touches by default.
+**Truly-niche Tier 2** — the entries deep-dived below. Narrow-vertical, low-adoption, deprecated, or otherwise outside what caravan's expected audience touches by default.
 
 ## Per-niche-service paragraphs and practicality verdicts
 
@@ -752,7 +752,7 @@ Free per-PR ephemeral preview environments tied to GitHub / Azure DevOps PRs. Th
 
 Active-active Cosmos across N enabled regions with last-writer-wins or custom JS merge procedures. Reached by globally distributed apps needing cross-region write latency (e.g., regulated industries with data-residency + multi-region availability). Multiplies RU cost by region count.
 
-**Practicality: `yaml-registry`** — already covered by `kv: tier: global` per `supeux_abstraction_v2.md` §6 vocabulary; specify regions as a list.
+**Practicality: `yaml-registry`** — already covered by `kv: tier: global` per `caravan_abstraction_v2.md` §6 vocabulary; specify regions as a list.
 
 #### Azure SQL geo-replication / failover groups
 
@@ -854,7 +854,7 @@ Zero-touch device enrollment via factory-flashed cert / TPM-based attestation. R
 
 High-RPS object storage variant — sub-10ms p99, 7× pricier per GB than Standard Hot. Reached by ML training shuffle, analytics scratch, and other "lots of small reads per second" workloads. Analogue of S3 Express One Zone.
 
-**Practicality: `yaml-registry`** — already covered by `bucket: variant: premium-block` per `supeux_abstraction_v2.md` §6.
+**Practicality: `yaml-registry`** — already covered by `bucket: variant: premium-block` per `caravan_abstraction_v2.md` §6.
 
 #### ADLS Gen2 hierarchical namespace
 
@@ -1044,7 +1044,7 @@ Always-warm instances on Premium plans to avoid cold starts. Reached when Premiu
 
 ## Runtime story for niche Tier 2 services (recap)
 
-Regardless of the per-service verdict above, the user's **runtime code path** for any niche Tier 2 service is unchanged: call the Azure SDK from inside the service container with `DefaultAzureCredential` (which auto-resolves via Managed Identity in cloud, CLI auth or service-principal env vars locally). This works identically whether the container runs locally (`az login` once, then `DefaultAzureCredential` picks up CLI creds) or on Container Apps / Functions / VMs (Managed Identity auto-injected by Azure). The verdict only determines whether supeux ships an opinionated yaml shortcut for the **provisioning** side, or sends the user to the v2 §2 escape hatch:
+Regardless of the per-service verdict above, the user's **runtime code path** for any niche Tier 2 service is unchanged: call the Azure SDK from inside the service container with `DefaultAzureCredential` (which auto-resolves via Managed Identity in cloud, CLI auth or service-principal env vars locally). This works identically whether the container runs locally (`az login` once, then `DefaultAzureCredential` picks up CLI creds) or on Container Apps / Functions / VMs (Managed Identity auto-injected by Azure). The verdict only determines whether caravan ships an opinionated yaml shortcut for the **provisioning** side, or sends the user to the v2 §2 escape hatch:
 
 ```yaml
 resources:
@@ -1066,11 +1066,11 @@ Seven patterns recur across groups and matter for File 5's recommendation and `c
 2. **A handful of services dominate by cost-sensitivity:** Functions, Blob, Cosmos DB, Service Bus + Storage Queue, Monitor Logs, VMs, SQL DB / Postgres Flexible Server. These are also the most stable APIs — the obvious targets for cloud↔local abstraction. Same pattern as AWS (Lambda, S3, DynamoDB, SQS, etc.).
 3. **Entra ID, Microsoft Fabric, Logic Apps, API Management, Azure ML, Azure OpenAI have no realistic local-container parity.** They're either Microsoft-specific protocols or proprietary models. Local emulation is best-effort at best. See **§Tier 2 deep-dive** above for the full sub-grouping, common-vs-niche split, and per-niche-service practicality verdict.
 4. **Many "managed" services are wire-compatible with OSS engines**: Postgres on Flexible Server, MySQL on Flexible Server, Cosmos MongoDB API (with caveats), Redis on Cache for Redis, Kafka via Event Hubs' Kafka protocol surface, AI Search Lucene-shape, Spark on Synapse / Databricks / HDInsight, Hadoop on HDInsight. This is the cheap abstraction zone.
-5. **The cost shape predicts how supeux's "switch to cloud" yaml should behave**: per-request services (Functions Consumption, Cosmos serverless, Storage Queue, Service Bus Standard) are friendly to cloud-by-default; per-hour services (Postgres FS provisioned, Cache for Redis, Container Apps Dedicated, AI Search S1+) are unfriendly to "spin up for CI" — supeux needs an *off-by-default* policy for those.
+5. **The cost shape predicts how caravan's "switch to cloud" yaml should behave**: per-request services (Functions Consumption, Cosmos serverless, Storage Queue, Service Bus Standard) are friendly to cloud-by-default; per-hour services (Postgres FS provisioned, Cache for Redis, Container Apps Dedicated, AI Search S1+) are unfriendly to "spin up for CI" — caravan needs an *off-by-default* policy for those.
 6. **The Tier 2 niche set bifurcates by provisioning shape, not runtime difficulty.** All Tier 2 services are runtime-solved by Managed Identity + Azure SDK from inside the user's container (works identically local / Container Apps / Functions). The only design question per service is whether its HCL fits a short `cloud_only:` yaml shortcut (`yaml-registry`) or is better left to the `terraform-module` escape hatch (`hand-tf`) — or omitted entirely (`skip`). See **§Tier 2 deep-dive** above.
 7. **Azure-specific cross-cutting concerns absent from AWS framework**:
-   - **Hybrid / Arc**. Azure Arc projects Azure governance + identity + Defender onto on-prem and other-cloud resources. supeux doesn't target hybrid clouds in v1 but should not assume the user's deploy targets are *only* Azure-managed VMs / Container Apps.
+   - **Hybrid / Arc**. Azure Arc projects Azure governance + identity + Defender onto on-prem and other-cloud resources. caravan doesn't target hybrid clouds in v1 but should not assume the user's deploy targets are *only* Azure-managed VMs / Container Apps.
    - **Microsoft Fabric capacity (CU-based)** is genuinely different from per-resource billing — pay for an aggregate capacity, consume across many workloads. The IR doesn't model this today; future work if Fabric becomes a primary user target.
-   - **Managed Identity / `DefaultAzureCredential`** is significantly cleaner than AWS's IAM role assumption story for local dev (no `~/.aws/credentials` files, just `az login`). supeux's local↔cloud auth story should lean into `DefaultAzureCredential` as the default pattern for Azure targets.
+   - **Managed Identity / `DefaultAzureCredential`** is significantly cleaner than AWS's IAM role assumption story for local dev (no `~/.aws/credentials` files, just `az login`). caravan's local↔cloud auth story should lean into `DefaultAzureCredential` as the default pattern for Azure targets.
 
 These feed directly into File 5's PoC scope recommendation and into `cloud_providers.md`'s "Implications for the IR schema" section.

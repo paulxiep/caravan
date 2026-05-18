@@ -6,11 +6,11 @@
 >
 > **§2 Generic-generic** — what each language *is*, use-case agnostic. The widest view: language profiles, sweet spots, philosophies.
 >
-> **§3 CLI compiler generic** — narrowed to "static-binary CLI that compiles config files." Strengths and weaknesses for this category of tool, independent of supeux.
+> **§3 CLI compiler generic** — narrowed to "static-binary CLI that compiles config files." Strengths and weaknesses for this category of tool, independent of caravan.
 >
-> **§4 Supeux-specific** — narrowed to supeux's actual requirements. This is where Go's case gets the detailed treatment because supeux's needs amplify Go's CLI-compiler strengths.
+> **§4 Caravan-specific** — narrowed to caravan's actual requirements. This is where Go's case gets the detailed treatment because caravan's needs amplify Go's CLI-compiler strengths.
 >
-> Scope: language for the supeux compiler binary that users invoke. Not user code. Not the `supeux-rpc-*` runtime adapters (those are Python + Rust regardless).
+> Scope: language for the caravan compiler binary that users invoke. Not user code. Not the `caravan-rpc-*` runtime adapters (those are Python + Rust regardless).
 
 ---
 
@@ -64,7 +64,7 @@ JavaScript with structural types. Designed at Microsoft (2012). Type-checks at c
 | Hiring (overall) | Medium pool | Smaller, growing | Largest pool |
 | Hiring (IaC-adjacent) | Largest pool | Smaller | Medium |
 
-**At this layer, none is wrong.** Go is the cloud-infra default; Rust is the compiler-and-parser default; TS is the web-and-tooling default. Supeux sits at an intersection: it's a CLI compiler (Rust's territory) that operates on cloud infrastructure (Go's territory) for an audience of Python and Rust developers (Rust-leaning culturally). The narrower layers below break the tie.
+**At this layer, none is wrong.** Go is the cloud-infra default; Rust is the compiler-and-parser default; TS is the web-and-tooling default. Caravan sits at an intersection: it's a CLI compiler (Rust's territory) that operates on cloud infrastructure (Go's territory) for an audience of Python and Rust developers (Rust-leaning culturally). The narrower layers below break the tie.
 
 ---
 
@@ -133,22 +133,22 @@ Narrower: assume a hypothetical static-binary compiler that parses yaml, transfo
 
 ---
 
-## 4. Supeux-specific case
+## 4. Caravan-specific case
 
-The CLI-compiler-generic analysis doesn't pick a winner. Supeux's actual requirements break the tie — strongly toward Go.
+The CLI-compiler-generic analysis doesn't pick a winner. Caravan's actual requirements break the tie — strongly toward Go.
 
-### 4.1 Supeux's specific requirements
+### 4.1 Caravan's specific requirements
 
-Four things supeux needs that are not generic CLI-compiler needs:
+Four things caravan needs that are not generic CLI-compiler needs:
 
 1. **Emit canonical, `terraform fmt`-clean HCL.** Phase 5 is HCL emission with HashiCorp's quirks (heredocs, interpolation, dynamic blocks, provider-specific syntax). Not generic config; not JSON.
-2. **Wrap `tofu`/`terraform` CLI with structured output.** `supeux plan` parses plan output; `supeux diff` compares structured plans; `supeux up` streams `apply` with proper cancellation.
+2. **Wrap `tofu`/`terraform` CLI with structured output.** `caravan plan` parses plan output; `caravan diff` compares structured plans; `caravan up` streams `apply` with proper cancellation.
 3. **IR has 4 sum types totaling ~20 variants** (8 resources + `cloud_only` = 9 `ResourceKind`; 5 `ModuleKind` http/worker/cron/batch/adapter; 3 `BundleShape` long_running/function/batch; 5 `TriggerKind` — terminology per the 2026-05-17 A-disposition in `considerations.md`). The PoC scoping pass (item Q in `considerations.md`) collapses `ModuleKind` + `BundleShape` into a single per-target `Container` struct with one `shape` field; it also adds 4 ResourceKinds (cache/stream/search/llm), so total variant count stays roughly 20. Tagged-union ergonomics matter regardless.
-4. **CLI diagnostic rendering quality.** Supeux's user-visible value is partly *better error messages than raw Terraform* — when yaml is malformed, when env-var wiring is broken, when a Tier-1 community library is missing. Source spans with multi-line carets, suggestions, colored output. The compiler's user surface is its diagnostics as much as its emitted HCL.
+4. **CLI diagnostic rendering quality.** Caravan's user-visible value is partly *better error messages than raw Terraform* — when yaml is malformed, when env-var wiring is broken, when a Tier-1 community library is missing. Source spans with multi-line carets, suggestions, colored output. The compiler's user surface is its diagnostics as much as its emitted HCL.
 
-Requirements 1–2 are clear Go advantages; requirement 3 is a Rust advantage; requirement 4 is a Rust advantage. (Two things deliberately *not* listed: single-binary distribution and cross-compile maturity — the §1 elimination already filtered out non-binary candidates, so all three finalists clear that bar by construction. And same-language-as-v1-user-runtime — same logic: Python is out at §1, and Go / Rust / TS all pass, so it doesn't differentiate among the finalists. Both belong in the §3.4 matrix where they live, not in §4.1.) A separate non-criterion — the Pulumi fallback — is discussed in §4.2 as a Go-side option, not a thing supeux must satisfy.
+Requirements 1–2 are clear Go advantages; requirement 3 is a Rust advantage; requirement 4 is a Rust advantage. (Two things deliberately *not* listed: single-binary distribution and cross-compile maturity — the §1 elimination already filtered out non-binary candidates, so all three finalists clear that bar by construction. And same-language-as-v1-user-runtime — same logic: Python is out at §1, and Go / Rust / TS all pass, so it doesn't differentiate among the finalists. Both belong in the §3.4 matrix where they live, not in §4.1.) A separate non-criterion — the Pulumi fallback — is discussed in §4.2 as a Go-side option, not a thing caravan must satisfy.
 
-### 4.2 Go — supeux fit (deep dive)
+### 4.2 Go — caravan fit (deep dive)
 
 Go's CLI-compiler strengths align with requirements 1–2. Two first-party libraries do most of the work on 1–2, plus one external validation point, two notes on the Go-side weaknesses (requirements 3 and 4), and one Go-only option (in-process Pulumi) discussed below:
 
@@ -179,13 +179,13 @@ Pulumi's Automation API in Go. The thesis's escape hatch ([thesis.md:63](thesis.
 
 **SST's `cmd/sst` (Go) — supporting evidence, not a requirement.**
 
-SST is 56% TypeScript + 24% Go. CLI binary in Go, Pulumi engine embedded, Terraform providers bridged through Pulumi. Components in TypeScript (the user-visible layer supeux replaces with yaml). GA since 2024-08.
+SST is 56% TypeScript + 24% Go. CLI binary in Go, Pulumi engine embedded, Terraform providers bridged through Pulumi. Components in TypeScript (the user-visible layer caravan replaces with yaml). GA since 2024-08.
 
-This isn't a criterion supeux *needs to satisfy* — it's external evidence that the engine pattern (Go CLI embedding Pulumi + Terraform providers) works in production. Picking Go means inheriting a path already validated at scale; picking Rust or TS means novel territory. Useful background, but not a requirement and not a tiebreaker on its own.
+This isn't a criterion caravan *needs to satisfy* — it's external evidence that the engine pattern (Go CLI embedding Pulumi + Terraform providers) works in production. Picking Go means inheriting a path already validated at scale; picking Rust or TS means novel territory. Useful background, but not a requirement and not a tiebreaker on its own.
 
 **The cost — requirement 3.**
 
-Supeux's IR is a sum type, Go doesn't have those. Sealed-interface + type-switch + `default: panic` is the emulation.
+Caravan's IR is a sum type, Go doesn't have those. Sealed-interface + type-switch + `default: panic` is the emulation.
 
 - 16 sum-type variants total, dispatched in ~3 places each
 - Missing a case is a runtime panic, not a compile error
@@ -197,7 +197,7 @@ Cost: ~5–10% more code than Rust would need, plus the bug class "added a primi
 
 **The diagnostic gap — requirement 4.** Go has no first-class equivalent to Rust's `miette` / `ariadne` / `codespan-reporting`. The state of the art in Go is bespoke: a struct with line/column, a snippet renderer, ANSI color via `fatih/color`. Roll-your-own. This is the one place where the Go pick is materially worse than the Rust alternative for a *compiler-shaped* product. Mitigation: study `miette`'s shape and build a thin equivalent (~1 week of work) before v1 ships its first error message; treat diagnostics as a deliberate design surface, not a side concern.
 
-### 4.3 Rust — supeux fit
+### 4.3 Rust — caravan fit
 
 Wins requirements 3 and 4 cleanly. Loses requirements 1–2:
 
@@ -206,7 +206,7 @@ Wins requirements 3 and 4 cleanly. Loses requirements 1–2:
 3. ADTs / pattern matching / `serde` tagged-union derive — clean win on the sum-type IR.
 4. **`miette` / `ariadne` / `codespan-reporting`** — best-in-class diagnostic rendering across all languages. Source spans with multi-line carets, suggestions, terminal-aware colors. The Rust-compiler / Elm-compiler diagnostic standard. This is a clean, structural win that Go cannot match without significant custom engineering.
 
-Separately: no SST-style precedent in Rust either, and the Pulumi fallback discussed in §4.2 has no Rust equivalent (no Pulumi-Rust SDK) — neither is a criterion supeux must satisfy, but both are worth noting as Go-side options that aren't on the table here.
+Separately: no SST-style precedent in Rust either, and the Pulumi fallback discussed in §4.2 has no Rust equivalent (no Pulumi-Rust SDK) — neither is a criterion caravan must satisfy, but both are worth noting as Go-side options that aren't on the table here.
 
 **Triggers that flip the call to Rust:**
 
@@ -214,7 +214,7 @@ Separately: no SST-style precedent in Rust either, and the Pulumi fallback discu
 - DNA signal / community-building is v1's headline goal.
 - First hire is a Rust-IaC veteran who pushes back.
 
-### 4.4 TypeScript — supeux fit
+### 4.4 TypeScript — caravan fit
 
 Wins discriminated unions (req 3). Loses 1, 2, 4:
 
@@ -227,7 +227,7 @@ Wins discriminated unions (req 3). Loses 1, 2, 4:
 
 The Pulumi-TS embed path (a Go-side option discussed in §4.2) does exist for TS too, but only matters if emission target shifts from raw HCL to Pulumi — which would itself shift the project's shape.
 
-Plus: cultural-fit FAQ ("why is the compiler for my Rust app written in JavaScript?"). And separately: TS is SST's *components* language, not its engine language — borrowing TS-the-engine means doing what SST explicitly chose not to do. Not a criterion supeux must satisfy, but a useful signal about which language pairs are pre-validated for engine work.
+Plus: cultural-fit FAQ ("why is the compiler for my Rust app written in JavaScript?"). And separately: TS is SST's *components* language, not its engine language — borrowing TS-the-engine means doing what SST explicitly chose not to do. Not a criterion caravan must satisfy, but a useful signal about which language pairs are pre-validated for engine work.
 
 **Triggers that flip the call to TS:**
 
@@ -246,9 +246,9 @@ The three-layer narrowing tells the whole story:
 
 - **Generic-generic (§2)** — Go is the cloud-infrastructure default. Doesn't decide.
 - **CLI-compiler generic (§3)** — three-way tie. Doesn't decide.
-- **Supeux-specific (§4)** — Go wins outright on requirements 1 and 2 (structural library wins with no comparable alternative). Loses cleanly on 3 (sum-type IR, real but cheap to mitigate) and 4 (diagnostic rendering, where Rust's `miette`-tier story is genuinely better and Go must build a thin equivalent deliberately). Separately, SST in Go validates that the broader engine pattern works in production, and in-process Pulumi via `auto`-API is a Go-only option *if* the fallback ever fires — both are supporting evidence, not requirements.
+- **Caravan-specific (§4)** — Go wins outright on requirements 1 and 2 (structural library wins with no comparable alternative). Loses cleanly on 3 (sum-type IR, real but cheap to mitigate) and 4 (diagnostic rendering, where Rust's `miette`-tier story is genuinely better and Go must build a thin equivalent deliberately). Separately, SST in Go validates that the broader engine pattern works in production, and in-process Pulumi via `auto`-API is a Go-only option *if* the fallback ever fires — both are supporting evidence, not requirements.
 
-The diagnostic gap (req 4) is the one item the original framing missed. It's real, but the right response is *invest in error rendering as a deliberate v1 design surface*, not flip to Rust — because the cost of giving up `hclwrite` + `tfexec` (requirements 1 and 2) is multiple weeks of structural rebuild, while the cost of building a Go diagnostic library good enough to be supeux-class is roughly one week of focused work.
+The diagnostic gap (req 4) is the one item the original framing missed. It's real, but the right response is *invest in error rendering as a deliberate v1 design surface*, not flip to Rust — because the cost of giving up `hclwrite` + `tfexec` (requirements 1 and 2) is multiple weeks of structural rebuild, while the cost of building a Go diagnostic library good enough to be caravan-class is roughly one week of focused work.
 
 Commit. Validate with the experiments in §6 in parallel with starting v1, not as a gate.
 
@@ -262,13 +262,13 @@ Commit. Validate with the experiments in §6 in parallel with starting v1, not a
 | Community-building / DNA signal becomes v1's headline goal | Rust |
 | First hire is a Rust-IaC veteran who pushes back | Rust |
 
-**Calibration for the current solo developer.** The author already works in Rust day-to-day (Rust is not a "new language to learn" for them, and a Rust portfolio exists independently of supeux). Two of the triggers above are inert in this situation: there's no DNA signal to chase, and no Rust-IaC-veteran-first-hire path because the developer *is* the first hire. The "learning value" of Go-from-Rust is real but bounded (~1–2 weeks to productive, ~3 months to idiomatic) — meaningfully gentler than the cost of rebuilding `hclwrite` / `tfexec` equivalents in Rust. Net: the lean toward Go is slightly stronger for this developer than for a generic reader.
+**Calibration for the current solo developer.** The author already works in Rust day-to-day (Rust is not a "new language to learn" for them, and a Rust portfolio exists independently of caravan). Two of the triggers above are inert in this situation: there's no DNA signal to chase, and no Rust-IaC-veteran-first-hire path because the developer *is* the first hire. The "learning value" of Go-from-Rust is real but bounded (~1–2 weeks to productive, ~3 months to idiomatic) — meaningfully gentler than the cost of rebuilding `hclwrite` / `tfexec` equivalents in Rust. Net: the lean toward Go is slightly stronger for this developer than for a generic reader.
 
 ---
 
 ## 6. Validating experiments
 
-Three half-day spikes — each isolates one supeux-specific requirement:
+Three half-day spikes — each isolates one caravan-specific requirement:
 
 1. **HCL emission spike.** Hand-emit the resolved plan for `module.api` + `bucket.uploads` + `queue.jobs` + IAM role with policies in each candidate language. Measure: lines of code, readability, test ergonomics. Expected: Go via `hclwrite` wins cleanly.
 2. **YAML round-trip with `Resource` tagged union.** Parse two of each primitive in each language. Measure: boilerplate, error-message quality. Expected: Rust via `serde` wins; Go workable with custom unmarshalers; TS competitive via zod.

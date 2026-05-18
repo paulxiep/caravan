@@ -46,7 +46,7 @@ Net: 36 AWS groups → 33 GCP groups.
 
 # At-a-glance tier rollup
 
-The `T0 / T1 / T2` framing is load-bearing in `thesis.md` ("Service tiers" under Current evaluation) and `supeux_abstraction_v2.md` §4. Recap:
+The `T0 / T1 / T2` framing is load-bearing in `thesis.md` ("Service tiers" under Current evaluation) and `caravan_abstraction_v2.md` §4. Recap:
 
 - **T0** — same wire API both sides; endpoint-URL or DSN env-var swap in user code suffices. No abstraction library required. Container-shaped compute primitives also sit here (one image, runs locally as docker-compose service or in cloud as Cloud Run / GKE / GCE).
 - **T1** — different wire APIs cloud vs local; a structural abstraction layer is required (per the thesis stable design principle). Mature community libraries cover the well-known pairs (rig-core / litellm for LLMs including Gemini and Anthropic-on-Vertex; jsonwebtoken + JWKS for Identity Platform token verify; lettre / smtplib for SMTP via SendGrid or self-managed; whisper crates for STT; OpenCV / yolov8 for image analysis).
@@ -650,11 +650,11 @@ See **§Tier 2 deep-dive** below for each truly-niche entry's use case and pract
 
 # Tier 2 deep-dive
 
-## What "Tier 2" means in supeux terms
+## What "Tier 2" means in caravan terms
 
-Tier 2 means no OSS container reproduces the service locally. For the user's **runtime** story this is already solved — user container code calls the GCP SDK directly with mounted application-default credentials, which works identically whether the container runs locally (docker bind-mount of `~/.config/gcloud` or `GOOGLE_APPLICATION_CREDENTIALS` env var) or on Cloud Run / GKE (service account auto-injected via Workload Identity). No supeux runtime abstraction is needed.
+Tier 2 means no OSS container reproduces the service locally. For the user's **runtime** story this is already solved — user container code calls the GCP SDK directly with mounted application-default credentials, which works identically whether the container runs locally (docker bind-mount of `~/.config/gcloud` or `GOOGLE_APPLICATION_CREDENTIALS` env var) or on Cloud Run / GKE (service account auto-injected via Workload Identity). No caravan runtime abstraction is needed.
 
-The only open question per service is the **provisioning** story: does its config shape fit a short `cloud_only:` yaml block (worth a registry slot), or is the config big / dynamic enough that hand-written `.tf` via the `terraform-module` escape hatch (`supeux_abstraction_v2.md` §2) is more honest? The sub-grouping below splits Tier 2 by *why* it's niche; the per-service paragraphs that follow judge each truly-niche entry on one of three verdicts:
+The only open question per service is the **provisioning** story: does its config shape fit a short `cloud_only:` yaml block (worth a registry slot), or is the config big / dynamic enough that hand-written `.tf` via the `terraform-module` escape hatch (`caravan_abstraction_v2.md` §2) is more honest? The sub-grouping below splits Tier 2 by *why* it's niche; the per-service paragraphs that follow judge each truly-niche entry on one of three verdicts:
 
 - **`yaml-registry`** — config fits a short `cloud_only:` block (model ID + a few knobs). Ship a registry entry.
 - **`hand-tf`** — config is too large / dynamic for short yaml (entity graphs, workflow bodies, data pipelines). Document the SDK call pattern, route to `resources.<name>: { type: terraform-module, source: ./modules/foo }`.
@@ -685,7 +685,7 @@ The seven buckets are oriented around what makes the service unreachable from a 
 - BigQuery (engine) — universal warehouse
 - Eventarc — common in Cloud Run + Pub/Sub deployments
 
-**Truly-niche Tier 2** — the entries deep-dived below. Narrow-vertical, low-adoption, deprecated, or outside what supeux's expected audience touches by default.
+**Truly-niche Tier 2** — the entries deep-dived below. Narrow-vertical, low-adoption, deprecated, or outside what caravan's expected audience touches by default.
 
 ## Per-niche-service paragraphs and practicality verdicts
 
@@ -897,7 +897,7 @@ Legacy API surface that runs on the Firestore engine. Migration to Firestore Nat
 
 ## Runtime story for niche Tier 2 services (recap)
 
-Regardless of the per-service verdict above, the user's **runtime code path** for any niche Tier 2 service is unchanged: call the GCP SDK from inside the service container with mounted application-default credentials. This works identically whether the container runs locally (docker bind-mount of `~/.config/gcloud` or `GOOGLE_APPLICATION_CREDENTIALS` env var) or on Cloud Run / GKE (service account auto-injected via Workload Identity Federation). The verdict only determines whether supeux ships an opinionated yaml shortcut for the **provisioning** side, or sends the user to the v2 §2 escape hatch:
+Regardless of the per-service verdict above, the user's **runtime code path** for any niche Tier 2 service is unchanged: call the GCP SDK from inside the service container with mounted application-default credentials. This works identically whether the container runs locally (docker bind-mount of `~/.config/gcloud` or `GOOGLE_APPLICATION_CREDENTIALS` env var) or on Cloud Run / GKE (service account auto-injected via Workload Identity Federation). The verdict only determines whether caravan ships an opinionated yaml shortcut for the **provisioning** side, or sends the user to the v2 §2 escape hatch:
 
 ```yaml
 resources:
@@ -915,8 +915,8 @@ with the resulting resource ID injected as an env var into services that `uses:`
 
 Seven patterns recur across groups and matter for File 5's recommendation:
 
-1. **Cloud Run unifies function, long-running, and batch shapes.** AWS splits these across Lambda (function), Fargate / App Runner (long-running), and Batch (batch). GCP's Cloud Run is one resource type with shape-driven knobs (min-instances, concurrency, request-deadline, Cloud Run Jobs for batch). supeux's `service.shape:` distinction still drives codegen differences but the underlying resource is the same — *cleaner than AWS*, not messier.
-2. **Pub/Sub fuses queue and topic.** What AWS splits across SQS + SNS + EventBridge, GCP collapses into Pub/Sub (with Cloud Tasks for HTTP work-queue specifics and Eventarc for content-based routing on top). supeux still emits both `queue` and `topic` as IR primitives; codegen handles the fusion.
+1. **Cloud Run unifies function, long-running, and batch shapes.** AWS splits these across Lambda (function), Fargate / App Runner (long-running), and Batch (batch). GCP's Cloud Run is one resource type with shape-driven knobs (min-instances, concurrency, request-deadline, Cloud Run Jobs for batch). caravan's `service.shape:` distinction still drives codegen differences but the underlying resource is the same — *cleaner than AWS*, not messier.
+2. **Pub/Sub fuses queue and topic.** What AWS splits across SQS + SNS + EventBridge, GCP collapses into Pub/Sub (with Cloud Tasks for HTTP work-queue specifics and Eventarc for content-based routing on top). caravan still emits both `queue` and `topic` as IR primitives; codegen handles the fusion.
 3. **BigQuery is the single warehouse + lake + ad-hoc-query axis.** AWS splits across Redshift (warehouse), Athena (ad-hoc), and Glue (catalog). BigQuery covers all three in one engine — external tables, BigLake (Iceberg / Hudi / Delta), Dataplex catalog integration, BigQuery Omni (cross-cloud). Reduces the surface area users have to learn.
 4. **Vertex AI is the single ML umbrella.** AWS splits across Bedrock (foundation models), SageMaker (training / serving / pipelines), Rekognition / Textract / Comprehend / Transcribe / Polly (purpose-built APIs). Vertex AI Model Garden + Vertex AI Vision / Speech / NLP + Vertex AI Training all live under one console. Same model lineup (Gemini, Claude on Vertex, Llama, Mistral) but managed uniformly.
 5. **First-party emulators expand T0 share.** Google ships `firestore-emulator`, `spanner-emulator`, `pubsub-emulator`, `bigtable-emulator`, `datastore-emulator`. AWS users stitch together community alternatives + DynamoDB-Local. GCP's local-emulator story is more uniform for the data plane.

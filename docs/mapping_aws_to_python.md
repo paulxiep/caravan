@@ -2,7 +2,7 @@
 
 > **Snapshot date: 2026-05-16.** References `aws_service_groups.md` for AWS-side detail and `mapping_python_to_aws.md` for the reverse direction.
 > **Scope**: Python ecosystem. "Wire-compatible" means *boto3 with `endpoint_url` (or a connection-string swap) works without code changes*. Rust mirror lives in `mapping_aws_to_rust.md`.
-> **Framing**: Python ecosystem evidence feeding into `thesis.md` (conceptual home) and `supeux_abstraction_v2.md` (long-form derivation). The emulation-quality bands below are **orthogonal to v2's T0/T1/T2 service tiers** — see the note after the bands table.
+> **Framing**: Python ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v2.md` (long-form derivation). The emulation-quality bands below are **orthogonal to v2's T0/T1/T2 service tiers** — see the note after the bands table.
 
 This file answers: *"I picked an AWS service. What container do I run alongside my Python app so the same code talks to it without knowing the difference?"*
 
@@ -28,7 +28,7 @@ The two axes describe different things:
 | **Emulation quality** | not measured here directly | wire-compatible / behavior-compatible / partial / none viable |
 | **v2 T0/T1/T2 tier** | T0 = yes (env-var swap is enough); T1 = no (need a community library to bridge); T2 = no AND no OSS engine | not measured |
 
-Loose correspondence: most **wire-compatible** + most **behavior-compatible** entries below are **T0**. **partial** entries split — some are still T0 with a few caveats (DocumentDB ≈ Mongo for happy paths), others become **T1** when a community library (`litellm` for Bedrock, `authlib` for Cognito token-verify, `smtplib` for SES, `openai-whisper` for Transcribe) is what unifies the code. **none viable** is always **T2** — supeux marks `cloud_only:` and the user picks one of v2 §4's four patterns (skip / hit-real / engine-swap / stub).
+Loose correspondence: most **wire-compatible** + most **behavior-compatible** entries below are **T0**. **partial** entries split — some are still T0 with a few caveats (DocumentDB ≈ Mongo for happy paths), others become **T1** when a community library (`litellm` for Bedrock, `authlib` for Cognito token-verify, `smtplib` for SES, `openai-whisper` for Transcribe) is what unifies the code. **none viable** is always **T2** — caravan marks `cloud_only:` and the user picks one of v2 §4's four patterns (skip / hit-real / engine-swap / stub).
 
 ---
 
@@ -43,7 +43,7 @@ Loose correspondence: most **wire-compatible** + most **behavior-compatible** en
 | Lambda@Edge | none | none | none viable | CDN-edge invocation has no local counterpart. |
 | Lambda Function URL | run handler in FastAPI/Flask wrapper | `localstack` Lambda | partial | Function URL itself doesn't matter locally; just invoke the handler. |
 
-**Python idiom for local dev**: per v2 §3 / §9, Lambda is one `shape:` of the `service` primitive, not a separate primitive. Containers-first means the same image deploys two ways — wrap your FastAPI/Flask app with `Mangum(app)` and use the env var `AWS_LAMBDA_RUNTIME_API` (present only inside Lambda) to branch between "run the handler under Mangum" and "serve over a port". Same code, two `shape:` values; supeux generates `aws_lambda_function` Terraform vs `aws_ecs_service` Terraform around the same image. The user wraps the handler ABI in idiomatic Python (`Mangum`) — that wrapper is user code, not supeux code.
+**Python idiom for local dev**: per v2 §3 / §9, Lambda is one `shape:` of the `service` primitive, not a separate primitive. Containers-first means the same image deploys two ways — wrap your FastAPI/Flask app with `Mangum(app)` and use the env var `AWS_LAMBDA_RUNTIME_API` (present only inside Lambda) to branch between "run the handler under Mangum" and "serve over a port". Same code, two `shape:` values; caravan generates `aws_lambda_function` Terraform vs `aws_ecs_service` Terraform around the same image. The user wraps the handler ABI in idiomatic Python (`Mangum`) — that wrapper is user code, not caravan code.
 
 ---
 
@@ -395,7 +395,7 @@ reply = litellm.completion(
 )
 ```
 
-The previously common pattern of hand-rolling an `LLMClient` Protocol with `BedrockLLM` + `OllamaLLM` impls is the v1 prescription — v2 §4 explicitly states that supeux does not ship runtime adapter libraries when mature community libraries (litellm here) already cover the abstraction. Bedrock Knowledge Bases / Agents / Guardrails remain `cloud_only` (T2) — litellm doesn't bridge those.
+The previously common pattern of hand-rolling an `LLMClient` Protocol with `BedrockLLM` + `OllamaLLM` impls is the v1 prescription — v2 §4 explicitly states that caravan does not ship runtime adapter libraries when mature community libraries (litellm here) already cover the abstraction. Bedrock Knowledge Bases / Agents / Guardrails remain `cloud_only` (T2) — litellm doesn't bridge those.
 
 ---
 
@@ -423,9 +423,9 @@ The previously common pattern of hand-rolling an `LLMClient` Protocol with `Bedr
 | **partial** | ~25 | Lambda, API Gateway, EventBridge, Cognito, KMS, Athena, Glue, X-Ray, SageMaker training/inference, Rekognition/Textract/Polly/Transcribe, Bedrock |
 | **none viable** | ~15 | Lambda@Edge, CloudFront, Global Accelerator, IAM enforcement, IAM Identity Center, S3 Vectors, S3 Express One Zone, S3 Select, S3 Object Lambda, Aurora DSQL, DAX, Neptune Analytics, Kendra, Bedrock Knowledge Bases / Agents / Guardrails, CloudWatch Synthetics/RUM/AppSignals, CloudFront Functions, SNS Mobile Push, IoT Device Management/Defender, IoT Analytics+ family, Forecast, Personalize, SageMaker JumpStart/Canvas |
 
-**Implications for supeux** (developed in `supeux_abstraction_v2.md`):
-- The ~22 wire-or-behavior-compatible services map to **v2 Tier 0** — supeux's job is env-var injection (endpoint URL or DSN). No abstraction library, no runtime SDK. This is v2's "containers-first" bread and butter.
-- The ~25 partial services split. Those with a mature Python community library (Cognito token verify → `authlib`/`python-jose`; SES → `smtplib`; Bedrock LLM core → `litellm`; Transcribe → `openai-whisper`; Rekognition/Textract → opencv-python/ultralytics/tesseract) are **v2 Tier 1** — supeux documents which library to import; the abstraction lives in user code via that library. Those without a clean community bridge (advanced API Gateway features, EventBridge schema registry, etc.) stay close to cloud-only.
-- The ~15 none-viable services are **v2 Tier 2** — `cloud_only:` in the IR. supeux refuses to generate a local stand-in; user picks one of v2 §4's four patterns (skip / hit-real / engine-swap / stub) per service.
+**Implications for caravan** (developed in `caravan_abstraction_v2.md`):
+- The ~22 wire-or-behavior-compatible services map to **v2 Tier 0** — caravan's job is env-var injection (endpoint URL or DSN). No abstraction library, no runtime SDK. This is v2's "containers-first" bread and butter.
+- The ~25 partial services split. Those with a mature Python community library (Cognito token verify → `authlib`/`python-jose`; SES → `smtplib`; Bedrock LLM core → `litellm`; Transcribe → `openai-whisper`; Rekognition/Textract → opencv-python/ultralytics/tesseract) are **v2 Tier 1** — caravan documents which library to import; the abstraction lives in user code via that library. Those without a clean community bridge (advanced API Gateway features, EventBridge schema registry, etc.) stay close to cloud-only.
+- The ~15 none-viable services are **v2 Tier 2** — `cloud_only:` in the IR. caravan refuses to generate a local stand-in; user picks one of v2 §4's four patterns (skip / hit-real / engine-swap / stub) per service.
 
-See `python_api_diffs.md` for the actual code-diff per pair. Conceptual home: `thesis.md`. Long-form derivation of T0/T1/T2 and the v1 PoC scope: `supeux_abstraction_v2.md`.
+See `python_api_diffs.md` for the actual code-diff per pair. Conceptual home: `thesis.md`. Long-form derivation of T0/T1/T2 and the v1 PoC scope: `caravan_abstraction_v2.md`.

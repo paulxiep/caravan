@@ -2,7 +2,7 @@
 
 > **Snapshot date: 2026-05-16.** AWS prices reference `aws_service_groups.md`.
 > **Scope**: TypeScript / JavaScript ecosystem (Node 22 + Bun, with Deno as container-baseline). Python and Rust mirrors live in `mapping_python_to_aws.md` / `mapping_rust_to_aws.md`.
-> **Framing**: this file is TypeScript ecosystem evidence feeding into `thesis.md` (conceptual home) and `supeux_abstraction_v3.md` (long-form derivation; supersedes v2). The Cheapest/Production/Premium tier labels below are the **operator's intuition**; they map onto v3 §6's explicit yaml `tier:` vocabulary (`db.sql tier: dev | prod-small | prod | premium | global`, `bucket class: standard | intelligent | …`, etc.) — that mapping is shown inline per row and rolled up in the closing summary table.
+> **Framing**: this file is TypeScript ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v3.md` (long-form derivation; supersedes v2). The Cheapest/Production/Premium tier labels below are the **operator's intuition**; they map onto v3 §6's explicit yaml `tier:` vocabulary (`db.sql tier: dev | prod-small | prod | premium | global`, `bucket class: standard | intelligent | …`, etc.) — that mapping is shown inline per row and rolled up in the closing summary table.
 
 Question this file answers: *"My TS app and its docker-compose dependencies — what does each piece become on AWS?"*
 
@@ -129,7 +129,7 @@ Each row lists three tiers — **Cheapest fit** (PoC, hobby, dev/staging), **Pro
 - **Production fit**: ECS Fargate task behind ALB.
 - **Premium fit**: App Runner for managed Fargate; ECS on EC2 + Spot for cost optimization.
 - **Decision criterion**: Lambda cold-start for Node is 100–500 ms typical (warm-start <10 ms). For request/response APIs without long-lived state, Lambda wins on ops + cost. For websockets / SSE / heavy startup work / lifespan-style init, Fargate keeps the long-lived event loop.
-- **Build step**: TS → JS bundling is *user's responsibility* — use `esbuild`, `tsc`, `swc`, or `bun build` to emit `.js` before packaging. supeux does NOT bundle for you; Lambda Node runtime expects `.js`.
+- **Build step**: TS → JS bundling is *user's responsibility* — use `esbuild`, `tsc`, `swc`, or `bun build` to emit `.js` before packaging. caravan does NOT bundle for you; Lambda Node runtime expects `.js`.
 
 ### Bun (opt-in runtime)
 - **Local**: `oven/bun:1`. Lambda: custom runtime via `bun-lambda` adapter on `provided.al2023`.
@@ -140,7 +140,7 @@ Each row lists three tiers — **Cheapest fit** (PoC, hobby, dev/staging), **Pro
 ### Deno (container-baseline only)
 - **Local**: `denoland/deno:1`. Static binary via `deno compile`.
 - **Cheapest fit / Production fit**: Fargate.
-- **Decision criterion**: Deno's Lambda story is niche; the AWS SDK for Deno is community-maintained. supeux treats Deno as "any container with a Dockerfile" — works, but no per-runtime guidance in v1.
+- **Decision criterion**: Deno's Lambda story is niche; the AWS SDK for Deno is community-maintained. caravan treats Deno as "any container with a Dockerfile" — works, but no per-runtime guidance in v1.
 
 ### HTTP frameworks (all three covered per design decision)
 
@@ -195,7 +195,7 @@ For each: same Cheapest=Lambda+adapter / Production=Fargate behind ALB / Premium
 ### AWS Lambda Powertools (TS)
 - **Local**: not needed.
 - **Cheapest / Production fit**: pair with any framework above when running on Lambda. `@aws-lambda-powertools/logger` for structured logging, `/tracer` for X-Ray, `/metrics` for EMF.
-- **Decision criterion**: optional but ergonomic on Lambda. Not a supeux concern; user adds it themselves.
+- **Decision criterion**: optional but ergonomic on Lambda. Not a caravan concern; user adds it themselves.
 
 ---
 
@@ -214,7 +214,7 @@ For each: same Cheapest=Lambda+adapter / Production=Fargate behind ALB / Premium
 - **Production fit**: Cognito User Pools + Identity Pools for federated AWS-resource access. Or self-host Keycloak on Fargate + RDS Postgres if your team has Keycloak conviction.
 - **Premium fit**: Auth0 / Okta / WorkOS on AWS Marketplace.
 - **Decision criterion**: Cognito's UX (hosted UI quirks, custom-attribute friction, password-reset flows) loses to Keycloak on flexibility. Cognito wins on AWS-IAM integration and price at small scale. For >50k users with complex flows (org SSO, branded UI), most teams end up on Auth0/WorkOS or self-host Keycloak.
-- **v3 framing (Tier 1)**: per v3 §4, the canonical pattern is *token verification* both sides via the same community library — **`jose`** + a JWKS URL env var. Cognito's JWKS lives at `https://cognito-idp.<region>.amazonaws.com/<pool_id>/.well-known/jwks.json`; Keycloak / dev issuer exposes its own well-known JWKS endpoint. Same `jwtVerify(token, jwks)` call both sides; no supeux-shipped library involved. Cognito's *user lifecycle* (sign-up, MFA, hosted UI, custom attributes) remains `cloud_only` per v3 §8.
+- **v3 framing (Tier 1)**: per v3 §4, the canonical pattern is *token verification* both sides via the same community library — **`jose`** + a JWKS URL env var. Cognito's JWKS lives at `https://cognito-idp.<region>.amazonaws.com/<pool_id>/.well-known/jwks.json`; Keycloak / dev issuer exposes its own well-known JWKS endpoint. Same `jwtVerify(token, jwks)` call both sides; no caravan-shipped library involved. Cognito's *user lifecycle* (sign-up, MFA, hosted UI, custom attributes) remains `cloud_only` per v3 §8.
 - **Code change**: where you previously used Keycloak Admin REST API, the equivalent is `@aws-sdk/client-cognito-identity-provider` admin actions — these don't have a portable abstraction and only run cloud-side anyway. For request-time auth, the `jose` JWKS pattern is the supported path.
 
 ### vault (Hashicorp)
@@ -268,7 +268,7 @@ This section reflects the Tier 1 pair classification in v3 §4 — `litellm`'s T
     prompt: "hi",
   });
   ```
-- **v3 yaml**: `cloud_only: llm: { type: bedrock.llm, model: "anthropic.claude-opus-4-7-..." }` for the *provisioning marker* (IAM perms, throughput config). User code talks to the Vercel AI SDK; supeux just ensures the cloud-side identity has the right Bedrock policies attached and the model ID env var is injected.
+- **v3 yaml**: `cloud_only: llm: { type: bedrock.llm, model: "anthropic.claude-opus-4-7-..." }` for the *provisioning marker* (IAM perms, throughput config). User code talks to the Vercel AI SDK; caravan just ensures the cloud-side identity has the right Bedrock policies attached and the model ID env var is injected.
 - **Out of scope for the Vercel AI SDK abstraction (remain `cloud_only` T2)**: Bedrock Knowledge Bases, Bedrock Agents, Bedrock Guardrails — AWS-orchestration services with no OSS equivalent. Either hit real AWS from local dev (mixed mode per v3 §4) or skip locally and test cloud-side.
 
 ### Vision / OCR (Rekognition + Textract)
@@ -321,8 +321,8 @@ This section reflects the Tier 1 pair classification in v3 §4 — `litellm`'s T
 | **Speech STT (Transcribe)** | Transcribe | same | not in v1; `@xenova/transformers` Whisper.js locally | **T1 (`@xenova/transformers`)** |
 | **Speech TTS (Polly)** | Polly Neural | same | no first-class TS TTS; cross-language to Python | partial / cross-lang |
 
-**Tier legend**: T0 = same wire API both sides, env-var swap (v3 §4). T1 = different wire APIs, community library bridges (Vercel AI SDK, `jose`, `nodemailer`, `@xenova/transformers`). T2 = no local equivalent, `cloud_only:` in IR. See `typescript_api_diffs.md` for code snippets per pair and `supeux_abstraction_v3.md` §4 for the canonical T0/T1/T2 derivation.
+**Tier legend**: T0 = same wire API both sides, env-var swap (v3 §4). T1 = different wire APIs, community library bridges (Vercel AI SDK, `jose`, `nodemailer`, `@xenova/transformers`). T2 = no local equivalent, `cloud_only:` in IR. See `typescript_api_diffs.md` for code snippets per pair and `caravan_abstraction_v3.md` §4 for the canonical T0/T1/T2 derivation.
 
 ---
 
-See `mapping_aws_to_typescript.md` for the reverse direction (which container plays the AWS role in dev) and `typescript_api_diffs.md` for the per-pair TS code diff. Conceptual home: `thesis.md`. Long-form derivation: `supeux_abstraction_v3.md` (supersedes v2).
+See `mapping_aws_to_typescript.md` for the reverse direction (which container plays the AWS role in dev) and `typescript_api_diffs.md` for the per-pair TS code diff. Conceptual home: `thesis.md`. Long-form derivation: `caravan_abstraction_v3.md` (supersedes v2).

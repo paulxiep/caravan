@@ -2,7 +2,7 @@
 
 > Long-form reference for the IR (intermediate representation) introduced by the 2026-05-17 dispositions in [`considerations.md`](considerations.md). v4 §3 / §6 carry the load-bearing primitive list and yaml shape; this file adds the typed data model, the compiler-pipeline phase signatures, the env-var injection contract for inter-component RPC, and the mapping unambiguity audit that motivates each yaml field.
 >
-> Read order: [thesis.md](thesis.md) → [supeux_abstraction_v4.md](supeux_abstraction_v4.md) §3 + §6 → this file → [hcl_walkthrough.md](hcl_walkthrough.md) for a worked emit sample.
+> Read order: [thesis.md](thesis.md) → [caravan_abstraction_v4.md](caravan_abstraction_v4.md) §3 + §6 → this file → [hcl_walkthrough.md](hcl_walkthrough.md) for a worked emit sample.
 >
 > **PoC narrowing (current direction)**: the PoC collapses this file's `Module` + `Bundle` two-layer split into a three-piece yaml shape — `entries:` (root deploy units, declared once) + `seams:` (SDK interface declarations, dispatched per target via `inproc | container | lambda`) + `targets:`. Containers are derived from per-target seam decisions, not declared. The yaml `interfaces:` block is gone in favor of yaml's `seams:` block + code-scan cross-check. See [poc_yaml_spec.md](poc_yaml_spec.md) for the narrowed yaml shape, [poc_rpc_sdk.md](poc_rpc_sdk.md) for the SDK contract surface, and [poc_groups_to_code.md](poc_groups_to_code.md) for the 10-group resource catalog. The structures below remain canonical for v1+; the PoC is a strict projection.
 
@@ -10,7 +10,7 @@
 
 ## 1. IR data model (Go-flavored sketch)
 
-Post-phase-3 normalized IR, one `Plan` value per `supeux.yaml`:
+Post-phase-3 normalized IR, one `Plan` value per `caravan.yaml`:
 
 ```go
 type Plan struct {
@@ -195,7 +195,7 @@ targets:
 
 - `uses:` is the union of references; producer vs consumer roles on a queue are narrowed by the consumer's `triggers: - queue: { from: X }`. The module named in the queue trigger gets `receive+delete` IAM; every other module that has the queue in `uses:` gets `send`.
 - `default_composition` on a target is sugar: any resource not in the target's `composition:` block inherits the target's default (overriding the resource's declared default).
-- `bundles:` is optional. If absent, supeux auto-bundles one bundle per module (named after the module). Explicit `bundles:` is required only for the modular-monolith case or when a target references a bundle name. Phase-2 warning if `placement:` references an unknown bundle.
+- `bundles:` is optional. If absent, caravan auto-bundles one bundle per module (named after the module). Explicit `bundles:` is required only for the modular-monolith case or when a target references a bundle name. Phase-2 warning if `placement:` references an unknown bundle.
 
 ---
 
@@ -205,33 +205,33 @@ targets:
 |---|---|---|---|
 | 1 | Lex | `[]byte → RawYAML` | Parse YAML AST with source spans (line, col, length). |
 | 2 | Parse | `RawYAML → ParsedDoc` | Map YAML onto Go structs; per-field schema validation; tagged-union dispatch on `type:`/`kind:`. Diagnostics carry source spans. |
-| 3 | Normalize | `ParsedDoc → Plan` | Resolve cross-refs (`uses:` strings → typed pointers); apply defaults; flatten composition fields. `supeux spec` reads here. **Plan is the IR golden-file format.** |
-| 4 | Resolve | `Plan × TargetName → ResolvedPlan` | Apply per-target composition/placement overrides; compute env-var injection (`SUPEUX_RPC_PEERS` JSON, endpoint URLs, table names); compute IAM derivation from `uses:` graph; networking derivation. |
+| 3 | Normalize | `ParsedDoc → Plan` | Resolve cross-refs (`uses:` strings → typed pointers); apply defaults; flatten composition fields. `caravan spec` reads here. **Plan is the IR golden-file format.** |
+| 4 | Resolve | `Plan × TargetName → ResolvedPlan` | Apply per-target composition/placement overrides; compute env-var injection (`CARAVAN_RPC_PEERS` JSON, endpoint URLs, table names); compute IAM derivation from `uses:` graph; networking derivation. |
 | 5 | Emit | `ResolvedPlan → []HCLFile` (or `[]ComposeFile`) | Pure projection via `hclwrite` / native struct→yaml. No back-references into Plan. |
 
 CLI verb → phases:
 
 | Verb | Phases | Output |
 |---|---|---|
-| `supeux check` | 1–2 | stderr diagnostics; exit code |
-| `supeux spec [--json\|--graph]` | 1–3 | stdout Plan JSON / graphviz / text |
-| `supeux compile --target=X` | 1–5 | files in `infra/X/generated/` |
-| `supeux diff --target=X` | (reads phase-5 output) + `tofu plan` | pretty-printed diff |
-| `supeux up --target=X` | (reads phase-5 output) + `tofu apply` / `compose up` | apply |
-| `supeux up --target=X --regenerate` | 1–5 + apply | one-shot |
+| `caravan check` | 1–2 | stderr diagnostics; exit code |
+| `caravan spec [--json\|--graph]` | 1–3 | stdout Plan JSON / graphviz / text |
+| `caravan compile --target=X` | 1–5 | files in `infra/X/generated/` |
+| `caravan diff --target=X` | (reads phase-5 output) + `tofu plan` | pretty-printed diff |
+| `caravan up --target=X` | (reads phase-5 output) + `tofu apply` / `compose up` | apply |
+| `caravan up --target=X --regenerate` | 1–5 + apply | one-shot |
 
 **Why this split:** phase 3 is the cloud-agnostic IR. Phase 4 is where it becomes target-specific. Phase 5 is pure emission. Tests pin phase-3 as JSON goldens, phase-5 as `.tf.golden` files. The 3/4 boundary keeps `spec` cloud-agnostic and makes target-swap cheap.
 
 ---
 
-## 4. Inter-module RPC — `supeux-rpc-<lang>` SDK contract
+## 4. Inter-module RPC — `caravan-rpc-<lang>` SDK contract
 
-Per `considerations.md` item B disposition. Four libraries: `supeux-rpc-go`, `supeux-rpc-python`, `supeux-rpc-rust`, `supeux-rpc-typescript`. Same wire contract; idiomatic surface per language.
+Per `considerations.md` item B disposition. Four libraries: `caravan-rpc-go`, `caravan-rpc-python`, `caravan-rpc-rust`, `caravan-rpc-typescript`. Same wire contract; idiomatic surface per language.
 
 Per-language surface (Python shown; others mirror):
 
 ```python
-from supeux_rpc import interface, provide, client
+from caravan_rpc import interface, provide, client
 
 @interface
 class JobRunner:
@@ -244,7 +244,7 @@ class WorkerJobRunner(JobRunner):
 provide(JobRunner, WorkerJobRunner())
 
 # In the api source — caller gets a proxy. Same call site regardless of packaging.
-runner = client(JobRunner)                        # PoC: no target_module arg; supeux finds the provider by interface name (one provider per interface enforced at phase 2)
+runner = client(JobRunner)                        # PoC: no target_module arg; caravan finds the provider by interface name (one provider per interface enforced at phase 2)
 txn_id = runner.submit("job-42", {"customer_id": 17})
 ```
 
@@ -254,11 +254,11 @@ The original IR surface required `target_module="worker"`. The PoC drops that ar
 
 | Env var | Value | Meaning |
 |---|---|---|
-| `SUPEUX_RPC_SELF` | `worker` | The container this process executes as (yaml container-name) |
-| `SUPEUX_RPC_PEERS` | JSON: `{"JobRunner": {"mode":"inproc"}, "Billing": {"mode":"http","url":"http://billing:8080"}, "Fraud": {"mode":"lambda","function_url":"https://abc.lambda-url.us-east-1.on.aws/"}}` | Per-interface dispatch table |
-| `SUPEUX_RPC_SHARED_SECRET` | random per-deploy hex | Bearer auth for `mode: http` calls |
+| `CARAVAN_RPC_SELF` | `worker` | The container this process executes as (yaml container-name) |
+| `CARAVAN_RPC_PEERS` | JSON: `{"JobRunner": {"mode":"inproc"}, "Billing": {"mode":"http","url":"http://billing:8080"}, "Fraud": {"mode":"lambda","function_url":"https://abc.lambda-url.us-east-1.on.aws/"}}` | Per-interface dispatch table |
+| `CARAVAN_RPC_SHARED_SECRET` | random per-deploy hex | Bearer auth for `mode: http` calls |
 
-Original IR additionally listed `SUPEUX_RPC_BUNDLE`. The PoC drops it because the container concept subsumes the bundle (one container = one deploy unit; `SELF` alone identifies it). PEERS keys are now **interface names** (not peer container names), reflecting the single-provider-per-interface PoC constraint.
+Original IR additionally listed `CARAVAN_RPC_BUNDLE`. The PoC drops it because the container concept subsumes the bundle (one container = one deploy unit; `SELF` alone identifies it). PEERS keys are now **interface names** (not peer container names), reflecting the single-provider-per-interface PoC constraint.
 
 **Phase 4 computation** — for every module M in the current bundle, for every peer P that M `uses:`:
 - M and P in same bundle → `mode: inproc`
@@ -267,7 +267,7 @@ Original IR additionally listed `SUPEUX_RPC_BUNDLE`. The PoC drops it because th
 
 **Wire format: HTTP/JSON v1.** Function URL + ALB + compose all natively speak it without sidecar; all four languages have mature HTTP+JSON stacks; gRPC would require ALB-HTTP/2 or NLB+sidecar (too much surface for v1). gRPC reconsidered at v2 if profiling demands.
 
-**Codegen vs reflection:** runtime reflection in v1, codegen in v2. Reflection suffices for the four reference apps; codegen needs `supeux gen-rpc` CLI verb and per-language emitters. Risk: renamed method in B silently breaks A until runtime; mitigated by integration tests across bundles and the v1.1 codegen step.
+**Codegen vs reflection:** runtime reflection in v1, codegen in v2. Reflection suffices for the four reference apps; codegen needs `caravan gen-rpc` CLI verb and per-language emitters. Risk: renamed method in B silently breaks A until runtime; mitigated by integration tests across bundles and the v1.1 codegen step.
 
 **Optional `interfaces:` yaml section** (not required v1):
 
@@ -281,7 +281,7 @@ interfaces:
 
 When present, phase 2 cross-checks `provides:` declarations and pre-wires IAM grants on Function URL ARNs.
 
-**Library home:** monorepo with `/sdk/<lang>/` directories, language-native package publishing on tag (`supeux-rpc-py-v0.1.0`, etc.).
+**Library home:** monorepo with `/sdk/<lang>/` directories, language-native package publishing on tag (`caravan-rpc-py-v0.1.0`, etc.).
 
 ---
 
@@ -306,7 +306,7 @@ pairs:
       ...
 ```
 
-`supeux check` (phase 2) grep-scans each module's source files for at least one matching env-var name from the library row keyed by `module.language:`. Miss = lint warning (not error) because users may read env vars via config indirection. Adding a Tier 1 pair = PR to `tier1.yaml` + companion rows in the four `mapping_*_to_aws.md` docs.
+`caravan check` (phase 2) grep-scans each module's source files for at least one matching env-var name from the library row keyed by `module.language:`. Miss = lint warning (not error) because users may read env vars via config indirection. Adding a Tier 1 pair = PR to `tier1.yaml` + companion rows in the four `mapping_*_to_aws.md` docs.
 
 ---
 
@@ -324,10 +324,10 @@ Where yaml→emit projection requires a choice not fully determined by the yaml.
 | ALB scheme | Inferred: any module with `expose.public:true` → public ALB in public subnets |
 | Multiple public modules | One shared ALB per target in v1; path-routing yaml field deferred to v1.1 |
 | ECS task CPU/memory defaults | Hardcoded 512/1024; override via `bundles.<name>: { cpu, memory }` |
-| RDS instance class per tier | Supeux-owned tier→instance mapping table in code, versioned with compiler |
+| RDS instance class per tier | Caravan-owned tier→instance mapping table in code, versioned with compiler |
 | SQS producer vs consumer IAM | **Convention**: module in `triggers: - queue: { from: X }` is consumer (receive+delete); any other module with `X` in `uses:` is producer (send) |
 | Image build context | Convention: `docker build .` from repo root (NOT subdir) so dispatcher has all module code; future `image: registry/foo:tag` skips ECR |
-| Image dispatcher contract | CLI arg `--module=X` (single) / `--modules=a,b,c` (fused); documented per-language in supeux guide |
+| Image dispatcher contract | CLI arg `--module=X` (single) / `--modules=a,b,c` (fused); documented per-language in caravan guide |
 | Image tag | Default `latest` (staging) / `${git_sha}` (prod); future `image_tag:` field |
 | CloudWatch log retention | Default 14 days; future `bundles.<name>: { log_retention_days }` |
 | `expose.port` vs ALB listener port | Convention: ALB always `80`, forwards to module's `expose.port` |
@@ -355,7 +355,7 @@ Where yaml→emit projection requires a choice not fully determined by the yaml.
 
 | Gap | Closure |
 |---|---|
-| Resource names in local env vars | Convention: `<app>-<resource>-<target>` naming; `supeux refresh` if drift |
+| Resource names in local env vars | Convention: `<app>-<resource>-<target>` naming; `caravan refresh` if drift |
 | AWS creds source | Convention: mount `~/.aws:/root/.aws:ro` + `AWS_PROFILE=<target-name>`; future `target.aws_profile:` override |
 | Cloud-side IAM for hybrid | Convention: no IAM emitted; human's profile carries perms (debugging posture) |
 | db_sql cloud + compute local | Requires VPN / RDS Data API / public RDS; out of scope v1.1 |
@@ -367,7 +367,7 @@ Net: ~30 gaps, all closeable. Most via a single yaml field or a documented defau
 ## 7. Risk list
 
 1. **Single-image multi-language bundle bloats fast.** Python + Rust + Go modular monolith easily hits ~400 MB. Cold-start tax on Lambda; pull latency on ECS. Mitigation: `docker buildx --cache-from`; v1.1 `image: multi-stage`.
-2. **`SUPEUX_RPC_*` env-var contract is a hidden ABI.** Once shipped, breaking it forces lockstep upgrades across four SDKs and every deployed Lambda. Mitigation: freeze contract at v1 ship; semver SDK packages.
+2. **`CARAVAN_RPC_*` env-var contract is a hidden ABI.** Once shipped, breaking it forces lockstep upgrades across four SDKs and every deployed Lambda. Mitigation: freeze contract at v1 ship; semver SDK packages.
 3. **`composition: by-id` Terraform import semantics are subtle.** `terraform import` is required to bring an existing ARN under state; emission bugs silently re-create. Mitigation: golden-file tests covering `by-id` paths; phase 4 emits explicit `import` blocks.
 4. **Reflection-based RPC has no compile-time signature check across modules.** Renamed method in B silently breaks A until runtime call fails. Mitigation: v1.1 codegen; integration tests across bundles in v1 CI.
 5. **Phase 4 is the largest single function** — networking, IAM, RPC peer table, composition overrides all collide. Risk of accidental complexity. Mitigation: sub-divide phase 4 by emitter concern in code organization.
@@ -378,8 +378,8 @@ Net: ~30 gaps, all closeable. Most via a single yaml field or a documented defau
 
 - **`bundles:` auto-bundling** when section is absent. Proposed: silent fallback (one bundle per module, named after the module). Confirm vs require explicit `bundles:` always.
 - **Inter-module Lambda auth.** Proposed: Function URL with `AuthType: AWS_IAM`. Confirm vs direct `lambda:Invoke`.
-- **`supeux-rpc-*` library home.** Proposed: monorepo with `/sdk/<lang>/`. Confirm vs four separate repos.
-- **Resource-name drift handling.** Proposed: convention `<app>-<resource>-<target>` + `supeux refresh` if drift. Accept vs Terraform-output read at compose-generation time.
+- **`caravan-rpc-*` library home.** Proposed: monorepo with `/sdk/<lang>/`. Confirm vs four separate repos.
+- **Resource-name drift handling.** Proposed: convention `<app>-<resource>-<target>` + `caravan refresh` if drift. Accept vs Terraform-output read at compose-generation time.
 
 ---
 
@@ -391,11 +391,11 @@ Before code exists:
 - [ ] Walk the same yaml through `dev-local`; confirm the compose in [hcl_walkthrough.md](hcl_walkthrough.md) follows.
 
 After v1 PoC code exists (extends v4 §9 checklist):
-- [ ] `supeux check` flags a queue with both `uses:` and `triggers:` referencing it from the same module as duplicate.
-- [ ] `supeux spec --json` emits a Plan with `Modules`, `Bundles`, `Resources`, `Targets` as separate top-level maps.
-- [ ] `supeux compile --target=dev-local` produces the compose file in [hcl_walkthrough.md](hcl_walkthrough.md) (golden-file test).
-- [ ] `supeux compile --target=staging-fargate` produces the HCL files in [hcl_walkthrough.md](hcl_walkthrough.md); `terraform fmt -check` passes.
-- [ ] `supeux compile --target=hybrid-dev` produces both an `infra/hybrid-dev/generated/main.tf` (cloud resources only) and `docker-compose.generated.yaml` (no minio/elasticmq, AWS creds mount, real cloud env vars).
-- [ ] All four reference apps link against `supeux-rpc-<lang>`, declare `JobRunner` (or equivalent), and pass `api → worker` calls both in-process (`dev-local`) and cross-bundle (`staging-fargate` → Function URL).
-- [ ] `SUPEUX_RPC_PEERS` env var correctly computed per bundle per target; integration test confirms dispatch mode (inproc / http / lambda).
+- [ ] `caravan check` flags a queue with both `uses:` and `triggers:` referencing it from the same module as duplicate.
+- [ ] `caravan spec --json` emits a Plan with `Modules`, `Bundles`, `Resources`, `Targets` as separate top-level maps.
+- [ ] `caravan compile --target=dev-local` produces the compose file in [hcl_walkthrough.md](hcl_walkthrough.md) (golden-file test).
+- [ ] `caravan compile --target=staging-fargate` produces the HCL files in [hcl_walkthrough.md](hcl_walkthrough.md); `terraform fmt -check` passes.
+- [ ] `caravan compile --target=hybrid-dev` produces both an `infra/hybrid-dev/generated/main.tf` (cloud resources only) and `docker-compose.generated.yaml` (no minio/elasticmq, AWS creds mount, real cloud env vars).
+- [ ] All four reference apps link against `caravan-rpc-<lang>`, declare `JobRunner` (or equivalent), and pass `api → worker` calls both in-process (`dev-local`) and cross-bundle (`staging-fargate` → Function URL).
+- [ ] `CARAVAN_RPC_PEERS` env var correctly computed per bundle per target; integration test confirms dispatch mode (inproc / http / lambda).
 - [ ] Switching strategies (`dev-local` → `staging-fargate` → `hybrid-dev`) on the §2 yaml works without source-code edits in any reference app.
