@@ -1,0 +1,74 @@
+name: Publish Ruby SDK to RubyGems
+
+# Manual-trigger workflow that publishes caravan-rpc (the Ruby SDK at
+# rpc/ruby/) to RubyGems.
+#
+# Auth uses a static API key. (RubyGems also supports OIDC trusted
+# publishing since late 2023 — a follow-up could migrate to remove the
+# rotating secret.) The key is stored as GitHub secret RUBYGEMS_API_KEY,
+# scoped to the `rubygems` environment. The `gem` CLI reads it as
+# `GEM_HOST_API_KEY` at run-time.
+#
+# Setup (one-time):
+# 1. Account: https://rubygems.org/sign_up. Enable 2FA (required for
+#    API-key push since 2022).
+# 2. API key: Profile → Edit Profile → API Keys → New API Key → scopes:
+#    "Push rubygem" + "Yank rubygem". Can be restricted to gem
+#    `caravan-rpc` only after the first publish (gem must exist).
+# 3. Create the GitHub environment: caravan repo Settings → Environments
+#    → New → name: `rubygems`. Optional: required reviewer + main-branch
+#    restriction (matches the existing `crates` / `npm` envs).
+# 4. Add the secret: environment `rubygems` → Add secret →
+#    name: RUBYGEMS_API_KEY, value: <paste the key from step 2>.
+#
+# Usage: bump VERSION in rpc/ruby/lib/caravan/rpc/version.rb, commit,
+# trigger this workflow. Default is dry-run; flip the input to publish.
+#
+# Reminder: yank is the only reversal — name + version stays claimed
+# but install is refused. Like crates.io.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (build + inspect gem, skip push). Flip to false to publish."
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  publish:
+    name: Publish to RubyGems
+    runs-on: ubuntu-latest
+    environment:
+      name: rubygems
+      url: https://rubygems.org/gems/caravan-rpc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: false
+
+      - name: Build gem
+        working-directory: rpc/ruby
+        run: gem build caravan-rpc.gemspec
+
+      - name: List gem contents
+        working-directory: rpc/ruby
+        run: |
+          gem_file=$(ls caravan-rpc-*.gem | head -1)
+          echo "Inspecting: $gem_file"
+          mkdir -p /tmp/inspect
+          gem unpack "$gem_file" --target /tmp/inspect
+          ls -laR /tmp/inspect/
+
+      - name: Publish (REAL — yank is the only reversal)
+        if: '!inputs.dry_run'
+        working-directory: rpc/ruby
+        env:
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
+        run: |
+          gem_file=$(ls caravan-rpc-*.gem | head -1)
+          gem push "$gem_file"
