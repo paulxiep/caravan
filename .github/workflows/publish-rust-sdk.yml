@@ -1,7 +1,9 @@
 name: Publish Rust SDK to crates.io
 
-# Manual-trigger workflow that publishes caravan-rpc (the Rust SDK at
-# rpc/rust/) to crates.io.
+# Manual-trigger workflow that publishes the Caravan Rust SDK to crates.io.
+# Two crates ship together: `caravan-rpc-macros` (the proc-macro crate) must
+# publish FIRST so that crates.io recognizes it when `caravan-rpc` (which
+# depends on it) is uploaded.
 #
 # crates.io does NOT support OIDC trusted publishers (as of late 2025) —
 # auth uses a static API token. We store it as a GitHub secret named
@@ -10,18 +12,16 @@ name: Publish Rust SDK to crates.io
 # Setup (one-time):
 # 1. Generate a token: https://crates.io/me → Account Settings → API Tokens
 #    → New Token. Scopes for the first publish: publish-new + publish-update.
-#    (After the crate exists, regenerate with just publish-update and
-#    restrict to the "caravan-rpc" crate.)
+#    (After the crates exist, regenerate with just publish-update and
+#    restrict to the "caravan-rpc" + "caravan-rpc-macros" crates.)
 # 2. Create the GitHub environment: caravan repo Settings → Environments →
 #    New → name: `crates`. Optional: require reviewers + restrict to `main`.
 # 3. Add the secret: environment `crates` → Add secret →
 #    name: CARGO_REGISTRY_TOKEN, value: <paste the token from step 1>.
-#    (Storing as an environment secret rather than a repo secret means it's
-#    only available to jobs that opt into the `crates` environment, and
-#    benefits from any review rules on that environment.)
 #
-# Usage: bump version in rpc/rust/Cargo.toml, commit, trigger this workflow.
-# Default is dry-run; flip the input to publish for real.
+# Usage: bump versions in BOTH rpc/rust/caravan-rpc/Cargo.toml AND
+# rpc/rust/caravan-rpc-macros/Cargo.toml (kept in lockstep), commit, trigger
+# this workflow. Default is dry-run; flip the input to publish for real.
 #
 # Reminder: crates.io publishes are IRREVERSIBLE after 72 hours. You can
 # `cargo yank` to mark a version unusable but the name + version stays
@@ -56,27 +56,52 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rpc/rust/target
-          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('rpc/rust/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('rpc/rust/**/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cargo-publish-
 
-      - name: List files that will ship
-        working-directory: rpc/rust
+      - name: List files that will ship (caravan-rpc-macros)
+        working-directory: rpc/rust/caravan-rpc-macros
         run: cargo package --list
 
-      - name: Build + verify package
-        working-directory: rpc/rust
+      - name: List files that will ship (caravan-rpc)
+        working-directory: rpc/rust/caravan-rpc
+        run: cargo package --list --allow-dirty
+
+      - name: Build + verify package (caravan-rpc-macros)
+        working-directory: rpc/rust/caravan-rpc-macros
         run: cargo package
 
-      - name: Publish (dry-run)
+      - name: Publish caravan-rpc-macros (dry-run)
         if: inputs.dry_run
-        working-directory: rpc/rust
+        working-directory: rpc/rust/caravan-rpc-macros
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --dry-run
 
-      - name: Publish (REAL — irreversible after 72h)
+      - name: Publish caravan-rpc-macros (REAL — irreversible after 72h)
         if: '!inputs.dry_run'
-        working-directory: rpc/rust
+        working-directory: rpc/rust/caravan-rpc-macros
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish
+
+      - name: Wait for caravan-rpc-macros to be indexed (REAL only)
+        if: '!inputs.dry_run'
+        run: sleep 60
+
+      - name: Publish caravan-rpc (dry-run)
+        if: inputs.dry_run
+        working-directory: rpc/rust/caravan-rpc
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        # --allow-dirty because the dry-run path can't resolve the
+        # not-yet-published macros crate from crates.io. The real publish
+        # below resolves correctly once the macros crate is indexed.
+        run: cargo publish --dry-run --allow-dirty
+
+      - name: Publish caravan-rpc (REAL — irreversible after 72h)
+        if: '!inputs.dry_run'
+        working-directory: rpc/rust/caravan-rpc
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish

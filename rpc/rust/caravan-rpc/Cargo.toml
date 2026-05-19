@@ -1,0 +1,22 @@
+[package]
+name = "caravan-rpc"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Rachapong Chirarattananon"]
+description = "Runtime SDK for the Caravan application-definition compiler. Pre-release placeholder."
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/paulxiep/caravan"
+homepage = "https://github.com/paulxiep/caravan"
+documentation = "https://docs.rs/caravan-rpc"
+keywords = ["caravan", "rpc", "deployment", "compiler"]
+categories = ["development-tools", "network-programming"]
+include = ["src/**/*", "README.md", "LICENSE"]
+
+[lib]
+name = "caravan_rpc"
+path = "src/lib.rs"
+
+[dependencies]
+caravan-rpc-macros = { version = "=0.0.1", path = "../caravan-rpc-macros" }

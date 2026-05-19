@@ -1,12 +1,15 @@
 [project]
 name = "caravan-rpc"
-version = "0.0.1"
-description = "Runtime SDK for the Caravan application-definition compiler. Pre-release placeholder."
+version = "0.1.0.dev0"
+description = "Runtime SDK for the Caravan application-definition compiler. Hand-typed functional release for the B0 bootstrap; lifts to 0.1.0 once Phase 2 closes."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Rachapong Chirarattananon" }]
 requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2",
+]
 keywords = ["caravan", "rpc", "deployment", "infrastructure", "compiler"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",

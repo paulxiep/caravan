@@ -118,6 +118,47 @@ The chicken-and-egg breaker. No compiler. No proc-macros. We hand-author a minim
 
 **B0 is the lived spec for the SDK.** Once it works, every later milestone is "automate this proven shape." If B0 fails, the thesis is wrong before we burn compiler effort.
 
+**Progress (B0 — IN PROGRESS):**
+
+SDK (`caravan/rpc/python/`):
+- [x] `@wagon` decorator + tests — 2026-05-19 (9/9 tests pass; real LLMExtraction-shape covered: `Optional[X] | None = None` defaults, `Signature.bind(**kwargs)`, string annotations under `from __future__ import annotations`)
+- [x] inproc registry + `provide()` — 2026-05-19 (6/6 tests pass; thread-safe via `Lock`; `provide()` rejects non-`@wagon` interfaces; `lookup()` raises clear `LookupError` naming the missing interface)
+- [x] `pydantic.TypeAdapter` codec — 2026-05-19 (12/12 tests pass; unified codec for dataclasses + Pydantic models + Optional defaults + primitives + unannotated passthrough; string annotations resolved via `typing.get_type_hints` with module globalns; full JSON wire roundtrip verified; adapters cached per `(interface, method)`)
+- [x] `client(I)` proxy — 2026-05-19 (16/16 tests pass; **no-config inertness verified**: env-unset → `client(I).method == impl.method` (`MethodType` equality, same `__self__`); HTTP dispatch via stdlib `urllib.request` exercising encode→POST→decode; `Authorization: Bearer` from `CARAVAN_RPC_SHARED_SECRET`; `X-Caravan-Rpc-Version: 1`; remote-error envelope → `RpcRemoteError`; transport failures → `RpcTransportError`; lambda mode raises `NotImplementedError` deferred to M7; strict seam-method semantics — non-`@wagon` methods raise `AttributeError`)
+- [x] `python -m caravan_rpc.serve` CLI — 2026-05-19 (12/12 tests pass incl. real-HTTP end-to-end roundtrip on ephemeral port: encode→POST→decode→Pydantic reconstruct; bearer-auth enforcement; wire-version header check; remote exception → `RpcRemoteError`; `--impl module:Class` resolution defaults `--interface-module` to the impl's module so invoice-parse's same-file interface+impl layout works without extra flags)
+- [x] **SDK smoke against real invoice-parse types** — 2026-05-19. In invoice-parse `.venv`: codec `_adapters_for(LLMExtraction, 'extract')` builds `TypeAdapter(Union[RawOcrOutput, NoneType])` (dataclass + Optional), `TypeAdapter(Union[TableExtractionOutput, NoneType])`, and `TypeAdapter(InvoiceExtraction)` (Pydantic BaseModel). No type-resolution errors. `_resolve_interface_and_impl('LLMExtraction', 'invoice_processing.extraction:GeminiExtractor', None)` resolves both correctly via the same-module default. `client(LLMExtraction).extract` returns the bound method of the registered `GeminiExtractor` — inertness verified end-to-end on the real refactor.
+
+**Publish flow (gated at Phase 2 close — M9-cloud):**
+
+The 0.0.1 PyPI placeholder already reserves the name. The 0.1.0 first-functional release waits until **M9-cloud (Phase 2 close)** — by then the SDK contract has been validated against compose AND Fargate AND Lambda, with both Python and Rust SDKs exercised. Through the entire B0 → M9-cloud run, test repos pull caravan-rpc via local-editable install (or git URL pinning a SHA).
+
+- [ ] **Local-editable install** through B0 → M9-cloud — `pip install -e <caravan>/rpc/python` (or `pip install "caravan-rpc @ git+https://github.com/paulxiep/caravan.git@<sha>#subdirectory=rpc/python"` for CI/cross-machine). SDK version stays at `0.1.0.dev0`.
+- [ ] **TestPyPI publish at 0.1.0rc1** — smoke after M9-cloud close: prove the wheel installs cleanly in a fresh venv.
+- [ ] **PyPI publish at 0.1.0** — once rc1 smoke passes. By this point the SDK has been driven by hand-wired (B0), compiler-emitted (M1, M3), Rust interop (M2), and AWS placements (M7, M4-cloud). Wire-version-1 ABI is genuinely frozen at this point.
+
+invoice-parse `caravan-conversion` branch:
+- [x] `caravan-rpc` installed in `.venv` via editable path (`pip install -e ../caravan/rpc/python`). No PyPI version pin. — 2026-05-19
+- [x] `extraction.py` refactored — 2026-05-19. `LLMExtractor` ABC + `create_extractor` factory removed. New `@wagon class LLMExtraction:` interface (method-signature-only). `GeminiExtractor` / `ClaudeExtractor` / `OpenAIExtractor` dropped ABC inheritance, became plain classes.
+- [x] `worker.py` call site refactored — 2026-05-19. Imports: `LLMExtractor` + `create_extractor` dropped, `LLMExtraction` + `GeminiExtractor` added, `caravan_rpc.{client, provide}` added. `run_pipeline` no longer takes `extractor` param. Call site at line 184 swapped to `client(LLMExtraction).extract(...)`. `run_worker()` calls `provide(LLMExtraction, GeminiExtractor())` once at startup before the queue loop.
+- [x] `cli.py` call site refactored — 2026-05-19. `--provider` flag still works; chosen impl is registered via `provide()` before `client(LLMExtraction).extract(...)`. `create_extractor` factory removed.
+- [x] `infra/docker-compose.caravan-bootstrap.yaml` written — 2026-05-19. Override file injects `CARAVAN_RPC_PEERS` into `processing` and spawns an `llm-extractor` peer service reusing the processing image with overridden `command:` running `python -m caravan_rpc.serve`.
+- [x] `Dockerfile` + wheel-vendoring setup — 2026-05-19. caravan-rpc gets installed in the image from a vendored wheel at `services/processing/vendor/caravan_rpc-*.whl`, built locally via `infra/rebuild-caravan-rpc-wheel.sh`. The wheel is gitignored (build artifact); the script rebuilds it after any caravan-rpc source change. When caravan-rpc lands on PyPI post-M9-cloud, this swaps to a plain `pip install caravan-rpc==<ver>`.
+
+Six-criteria acceptance gate (extraction.json SHA-256 identical across runs):
+- [x] #1 Local-run, no env — 2026-05-19. cli.py against `invoices/sample_invoice.pdf`. `extraction.json` SHA = `3f3c0097226fec3d22d55c00a8a0c436b8bcfe9ad7aab13f33b2bde1364f2bf7`. Vendor=myAgency Ltd, 2766 CZK, 7 line items, 100% confidence. (Local venv needs `paddlex[ocr]` + `OCR_DET_MODEL=PP-OCRv5_mobile_det` + `OCR_REC_MODEL=en_PP-OCRv5_mobile_rec`; auto-downloads models on first run.)
+- [x] #2 Compose, no env — 2026-05-19. `docker compose -f infra/docker-compose.yaml --profile app up -d`, ingest enqueues sample_invoice.pdf as job `e70aa72d-...`, processing worker handles it inproc (env unset). Postgres `extraction_data` is **semantically identical** to #1 (deep dict equality). Confirms inertness path works inside container too.
+- [x] #3 Inproc with env — 2026-05-19. `CARAVAN_RPC_PEERS={"LLMExtraction":{"mode":"inproc"}}`. Same SHA as #1. Inproc-explicit path goes through the same inertness branch as no-env.
+- [x] #4 HTTP local (two-process) — 2026-05-19. `caravan_rpc.serve` background-spawned on port 8080; cli pointed at it. Same SHA as #1. HTTP encode→POST→decode preserved every byte through `pydantic.TypeAdapter` for the real `RawOcrOutput` / `TableExtractionOutput` / `InvoiceExtraction` types.
+- [x] #5 HTTP compose (override file) — 2026-05-19. `docker compose -f infra/docker-compose.yaml -f infra/docker-compose.caravan-bootstrap.yaml --profile app up -d` brings up `llm-extractor` peer service (same image, command `python -m caravan_rpc.serve --interface LLMExtraction --impl invoice_processing.extraction:GeminiExtractor --port 8080`). `processing` runs with `CARAVAN_RPC_PEERS={"LLMExtraction":{"mode":"http","url":"http://llm-extractor:8080"}}` injected. PDF job `4b31b715-...`'s `extraction_data` semantically identical to #1. 17 successful POST `/_caravan/rpc/LLMExtraction/extract` 200 responses in llm-extractor logs (one per ingested invoice). End-to-end HTTP dispatch through container DNS confirmed.
+- [x] #6 Source identical across runs — 2026-05-19. Verified via mtime check: source files last edited 22:00–22:01, all runs started ≥22:35. `git diff` between the working-tree state at any two run times is empty (no edits between criterion runs).
+
+Key decisions ratified during planning:
+- **Wire serialization:** `pydantic.TypeAdapter` built from `@wagon` method type hints, cached at decoration time. Pydantic v2 is a hard SDK dep.
+- **HTTP-mode topology:** separate compose service `llm-extractor` reusing the `processing` image with overridden `command:`. Not a K8s-style "sidecar" — an independent peer service. Same shape generalizes to M7-Fargate (sibling Task Definition) and M7-Lambda (Function URL with `caravan_rpc.lambda_handler` entry).
+- **HTTP server library:** stdlib `http.server` ThreadingHTTPServer (no extra deps).
+- **`provide()` invocation site:** worker/CLI startup, not module-import time.
+- **Bedrock/LLM provider swap:** out of B0 scope (that's resource composition at M4-cloud, orthogonal to seam dispatch).
+
 ### B0p — code-rag stub track (parallelizable with B0; not blocking)
 
 **Parallelization note.** This is the one milestone in the plan explicitly designed for concurrent execution — separate language (Rust), separate repo (code-rag), separate branch (`caravan-conversion`), no API surface dependency on B0's Python output beyond the shared spec. If you have multiple sessions / people, **run B0 and B0p concurrently**. If solo, either ordering works: parallel (context-switch cost, but both branches stay alive) or sequential B0 → B0p (let Python's SDK lessons inform the Rust trait surface, slightly lower churn risk). All other milestones in the plan are strictly sequential.
@@ -135,6 +176,54 @@ While B0 lands the Python contract, code-rag's `caravan-conversion` branch progr
 - `cargo test` passes.
 - `trunk build --release --features standalone` still produces WASM artifact.
 - When real `caravan-rpc` lands at M2, code-rag swaps stub for real — drop-in.
+
+**Progress (B0p — IN PROGRESS):**
+
+SDK (`caravan/rpc/rust/`):
+- [x] Workspace restructure: `caravan-rpc/` + new sibling `caravan-rpc-macros/` (proc-macro = true) — 2026-05-20 (single-crate placeholder → two-crate workspace; `LICENSE` / `README.md` / `src/lib.rs` moved under `caravan-rpc/`; root `Cargo.toml` becomes a workspace manifest)
+- [x] Identity `#[wagon]` attribute macro in `caravan-rpc-macros` — 2026-05-20 (returns input unchanged; M2 will replace with adapter codegen; visual surface in code-rag matches the M2 target byte-for-byte)
+- [x] Functional inproc registry — 2026-05-20 (`TypeId`-keyed `RwLock<HashMap<TypeId, Box<dyn Any + Send + Sync>>>`; `provide::<T: ?Sized + Send + Sync + 'static>(Arc<T>)`; `client::<T>() -> Arc<T>` + `try_client::<T>() -> Option<Arc<T>>` + `is_provided::<T>()`; no-config inertness verified — env-unset → straight registry lookup with zero overhead beyond `Arc::clone`)
+- [x] Loud-fail guards for non-inproc dispatch — 2026-05-20 (`CARAVAN_RPC_PEERS` containing `"http"` panics naming M2; `"lambda"` panics naming M7; coarse string match avoids committing to the JSON schema before M2)
+- [x] Registry integration tests — 2026-05-20 (9/9 pass: `provide`/`client` roundtrip, last-write-wins re-register, panic when no impl, `try_client`+`is_provided`, inproc-mode env behaves like unset, http-mode env panics with M2 pointer, lambda-mode env panics with M7 pointer, distinct traits keyed independently by `TypeId`, `Arc` clone semantics — `EnvVarGuard` serializes env-touching tests; unique marker traits keep registry-only tests parallel-safe)
+- [x] Publish workflow updated for two-crate workspace — 2026-05-20 (`publish-rust-sdk.yml` publishes `caravan-rpc-macros` first, sleeps 60s for crates.io indexing, then publishes `caravan-rpc`; defaults to dry-run)
+- [x] `cargo clippy --workspace --all-targets` clean — 2026-05-20
+- [x] `cargo fmt --all` clean — 2026-05-20
+
+**Publish flow (gated at PR/MR merge):**
+
+The on-crates.io 0.0.1 placeholder is unchanged. Local crates remain at `0.0.1` through B0p iteration per user direction ("we should only bump publish on full PR/MR"). The coordinated `0.0.2` bump + publish for both `caravan-rpc` and `caravan-rpc-macros` lands at PR-merge time.
+
+- [ ] **Local-path-dep** consumed by code-rag through B0p — `caravan-rpc = { path = "../caravan/rpc/rust/caravan-rpc" }`
+- [ ] **0.0.2 bump + crates.io publish** at PR-merge (both crates in lockstep; macros first, runtime second)
+
+code-rag `caravan-conversion` branch:
+- [x] `caravan-rpc` added via workspace path-dep across `code-rag-chat` (root), `code-rag-store`, `code-rag-mcp`, `code-raptor`. **Not** added to `code-rag-engine` / `code-rag-ui` (those compile to `wasm32-unknown-unknown`). `async-trait = "0.1"` added as direct dep where needed (0.1.89 resolved). — 2026-05-20
+- [x] Seam declarations in `crates/code-rag-store/src/seams.rs`: `Embedder`, `Reranker`, `VectorReader`, `LlmClient` — all `#[wagon]`, `&self` only (Mutex moves into impls), `Reranker::rerank` keeps owned `Vec<String>` for the cross-encoder, `VectorReader` covers all 13 read methods + call-graph reads, `LlmError` defined locally so the trait can live alongside the others. — 2026-05-20
+- [x] **B3a Embedder:** `Embedder` struct → `FastEmbedImpl`; interior `std::sync::Mutex<TextEmbedding>`; `EmbedError::Poisoned` variant; impl `seams::Embedder`. Call sites swap to `&dyn Embedder` parameter; AppState's `tokio::sync::Mutex<Embedder>` becomes `Arc<dyn Embedder>`. — 2026-05-20
+- [x] **B3b Reranker:** `Reranker` struct → `MsMarcoRerankerImpl`; interior `std::sync::Mutex<TextRerank>`; `RerankError::Poisoned` variant; impl `seams::Reranker`. AppState's `Option<tokio::sync::Mutex<Reranker>>` becomes `Option<Arc<dyn Reranker>>`. — 2026-05-20
+- [x] **B3c VectorReader:** `impl crate::seams::VectorReader for VectorStore` with all 16 read methods delegating via UFCS to inherent methods of the same name; writes stay on the concrete `VectorStore`. — 2026-05-20
+- [x] **B3d LlmClient:** `LlmClient` struct → `RigGeminiImpl`; module-level free `async fn generate` absorbed into trait method; chat-side `EngineError` gains `#[from] LlmError`; `ApiError::From<LlmError>` added. — 2026-05-20
+- [x] **B4 + B5:** AppState stripped to `{ classifier, config }`; seam impls constructed in `from_config` and registered via `caravan_rpc::provide::<dyn I>(...)`; **every call site swapped to `caravan_rpc::client::<dyn I>().method(...)`** in `src/api/handlers.rs`, `src/engine/retriever.rs`, `src/harness/runner.rs`, `crates/code-rag-mcp/src/main.rs`; `retrieve()` and `runner::run_all()` signatures take `&dyn …`. — 2026-05-20
+
+Verification gate:
+- [x] `cargo check --workspace` clean (caravan + code-rag) — 2026-05-20
+- [x] `cargo test --workspace` green (all test suites, no regression vs baseline) — 2026-05-20
+- [x] `cargo clippy --workspace --all-targets` (caravan SDK clean; code-rag has only pre-existing warnings unrelated to B0p) — 2026-05-20
+- [x] `cargo fmt --all` clean (both repos) — 2026-05-20
+- [x] `cargo build --release -p code-rag-chat` succeeds — 2026-05-20
+- [x] `cargo build --release -p code-rag-mcp` succeeds independently — 2026-05-20
+- [x] `cargo run --release -p code-rag-chat -- --health` exits 0 with **no env var** (no-config inertness confirmed) — 2026-05-20
+- [ ] `trunk build --release --features standalone` re-run (engine/UI not consumers of `caravan-rpc`, so unchanged — defer unless WASM bundle changes)
+- [ ] `docker compose build` re-run
+
+Key decisions ratified during B0p:
+- **`#[wagon]` ships now as identity proc-macro** (separate `caravan-rpc-macros` crate). Visual surface in code-rag matches M2 target byte-for-byte; no source-file churn at M2.
+- **Full code-rag refactor** (concrete structs → traits, Mutex moves inside impls, every call site swapped). The dev plan flagged the `Mutex<Embedder>` interior-mutability case as the load-bearing thing B0p must validate; that's now exercised end-to-end.
+- **Local path-dep** during iteration; **no version bumps mid-iteration** (per user direction). 0.0.2 bump + crates.io publish are gated to the PR/MR merge.
+- **Optional seam handling:** `try_client::<T>() -> Option<Arc<T>>` SDK helper (cleaner than a sentinel `NoopReranker` impl). Used for Reranker, which the chat target may run without.
+- **VectorWriter / call-edges resource split deferred to M5** per dev plan. B0p's `VectorReader` covers reads only; writes stay on the concrete `VectorStore`.
+
+See [../PoC-B0p.md](../PoC-B0p.md) for a full milestone write-up.
 
 ### M0 — Compiler parses yaml and writes a file (2 sessions)
 
