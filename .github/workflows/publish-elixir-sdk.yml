@@ -67,4 +67,9 @@ jobs:
         working-directory: rpc/elixir
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-        run: mix hex.publish --yes
+        # `mix hex.publish` (no subtask) tries to publish both the package
+        # AND its HexDocs. The docs phase needs ex_doc as a dev dep, which
+        # this 0.0.1 placeholder doesn't carry (zero-dep stub). Use the
+        # `package` subtask to publish only the package; HexDocs can be
+        # added back when 0.1.0 introduces real APIs worth documenting.
+        run: mix hex.publish package --yes
