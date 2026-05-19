@@ -1,0 +1,71 @@
+name: Publish .NET SDK to NuGet
+
+# Manual-trigger workflow that publishes Caravan.Rpc (the .NET SDK at
+# rpc/dotnet/) to NuGet.
+#
+# Auth uses a static API key — NuGet does not support OIDC trusted
+# publishing as of late 2025. The key is stored as a GitHub secret named
+# NUGET_API_KEY, scoped to the `nuget` environment.
+#
+# Setup (one-time):
+# 1. Generate an API key: https://www.nuget.org/account/apikeys → Create.
+#    Scopes for first publish: "Push new packages and package versions"
+#    with glob pattern `Caravan.*` (or `*` if simpler). Max expiration:
+#    365 days.
+# 2. Create the GitHub environment: caravan repo Settings → Environments →
+#    New → name: `nuget`. Optional: required reviewer + restrict to `main`
+#    (matches the existing `crates` / `npm` envs).
+# 3. Add the secret: environment `nuget` → Add secret →
+#    name: NUGET_API_KEY, value: <paste the key from step 1>.
+#
+# Usage: bump <Version> in rpc/dotnet/Caravan.Rpc.csproj, commit, trigger
+# this workflow. Default is dry-run; flip the input to publish for real.
+#
+# Reminder: NuGet lets you unlist a version (hidden from search; still
+# installable by exact version) but the version number is permanently
+# consumed — same immutability flavor as crates.io. Use dry-run first.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (pack + list .nupkg contents, skip push). Flip to false to publish."
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  publish:
+    name: Publish to NuGet
+    runs-on: ubuntu-latest
+    environment:
+      name: nuget
+      url: https://www.nuget.org/packages/Caravan.Rpc/
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore + pack
+        working-directory: rpc/dotnet
+        run: dotnet pack -c Release
+
+      - name: List .nupkg contents
+        working-directory: rpc/dotnet
+        run: |
+          nupkg=$(ls bin/Release/*.nupkg | head -1)
+          echo "Inspecting: $nupkg"
+          unzip -l "$nupkg"
+
+      - name: Publish (REAL — version is permanently consumed)
+        if: '!inputs.dry_run'
+        working-directory: rpc/dotnet
+        run: |
+          nupkg=$(ls bin/Release/*.nupkg | head -1)
+          dotnet nuget push "$nupkg" \
+            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate

@@ -1,0 +1,70 @@
+name: Publish Elixir SDK to Hex.pm
+
+# Manual-trigger workflow that publishes caravan_rpc (the Elixir SDK at
+# rpc/elixir/) to Hex.pm.
+#
+# Auth uses a static API key stored as GitHub secret HEX_API_KEY, scoped
+# to the `hex` environment. Mix reads HEX_API_KEY natively when
+# `mix hex.publish --yes` is invoked non-interactively.
+#
+# Setup (one-time):
+# 1. Account: https://hex.pm/users/new. Confirm email.
+# 2. API key: https://hex.pm/dashboard/keys → Generate New Key → name:
+#    `caravan-monorepo-publish`, permissions: `api:write` (scoped to
+#    `caravan_rpc` after the first publish; broader for first publish).
+# 3. Create the GitHub environment: caravan repo Settings → Environments
+#    → New → name: `hex`. Optional: required reviewer + main-branch
+#    restriction (matches the existing `crates` / `npm` envs).
+# 4. Add the secret: environment `hex` → Add secret →
+#    name: HEX_API_KEY, value: <paste the key from step 2>.
+#
+# Usage: bump @version in rpc/elixir/mix.exs, commit, trigger this
+# workflow. Default is dry-run; flip the input to publish.
+#
+# Reminder: Hex.pm allows reverting a release within ONE HOUR of publish
+# (rare among registries; wider safety net than crates.io's yank-only).
+# After that the version is permanent (retire-only, similar to gem yank).
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (mix hex.build, skip publish). Flip to false to publish."
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  publish:
+    name: Publish to Hex.pm
+    runs-on: ubuntu-latest
+    environment:
+      name: hex
+      url: https://hex.pm/packages/caravan_rpc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "26"
+          elixir-version: "1.16"
+
+      - name: Install hex + rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Fetch deps (sanity)
+        working-directory: rpc/elixir
+        run: mix deps.get
+
+      - name: Build hex package + list contents
+        working-directory: rpc/elixir
+        run: mix hex.build
+
+      - name: Publish (REAL — 1h revert window, then permanent)
+        if: '!inputs.dry_run'
+        working-directory: rpc/elixir
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: mix hex.publish --yes

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>Caravan.Rpc</AssemblyName>
+    <RootNamespace>Caravan.Rpc</RootNamespace>
+
+    <PackageId>Caravan.Rpc</PackageId>
+    <Version>0.0.1</Version>
+    <Authors>Rachapong Chirarattananon</Authors>
+    <Description>Runtime SDK for the Caravan application-definition compiler. Pre-release placeholder.</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/paulxiep/caravan</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/paulxiep/caravan</PackageProjectUrl>
+    <PackageTags>caravan;rpc;deployment;infrastructure;compiler</PackageTags>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <IncludeSymbols>false</IncludeSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="LICENSE" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
