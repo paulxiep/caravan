@@ -224,16 +224,16 @@ CLI verb → phases:
 
 ---
 
-## 4. Inter-module RPC — `caravan-rpc-<lang>` SDK contract
+## 4. Inter-module RPC — `caravan-rpc` SDK contract
 
-Per `considerations.md` item B disposition. Four libraries: `caravan-rpc-go`, `caravan-rpc-python`, `caravan-rpc-rust`, `caravan-rpc-typescript`. Same wire contract; idiomatic surface per language.
+Per `considerations.md` item B disposition. Four libraries: `caravan-rpc-go`, `caravan-rpc`, `caravan-rpc`, `caravan-rpc-typescript`. Same wire contract; idiomatic surface per language.
 
 Per-language surface (Python shown; others mirror):
 
 ```python
 from caravan_rpc import interface, provide, client
 
-@interface
+@wagon
 class JobRunner:
     def submit(self, job_id: str, payload: dict) -> str: ...
 
@@ -396,6 +396,6 @@ After v1 PoC code exists (extends v4 §9 checklist):
 - [ ] `caravan compile --target=dev-local` produces the compose file in [hcl_walkthrough.md](hcl_walkthrough.md) (golden-file test).
 - [ ] `caravan compile --target=staging-fargate` produces the HCL files in [hcl_walkthrough.md](hcl_walkthrough.md); `terraform fmt -check` passes.
 - [ ] `caravan compile --target=hybrid-dev` produces both an `infra/hybrid-dev/generated/main.tf` (cloud resources only) and `docker-compose.generated.yaml` (no minio/elasticmq, AWS creds mount, real cloud env vars).
-- [ ] All four reference apps link against `caravan-rpc-<lang>`, declare `JobRunner` (or equivalent), and pass `api → worker` calls both in-process (`dev-local`) and cross-bundle (`staging-fargate` → Function URL).
+- [ ] All four reference apps link against `caravan-rpc`, declare `JobRunner` (or equivalent), and pass `api → worker` calls both in-process (`dev-local`) and cross-bundle (`staging-fargate` → Function URL).
 - [ ] `CARAVAN_RPC_PEERS` env var correctly computed per bundle per target; integration test confirms dispatch mode (inproc / http / lambda).
 - [ ] Switching strategies (`dev-local` → `staging-fargate` → `hybrid-dev`) on the §2 yaml works without source-code edits in any reference app.

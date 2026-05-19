@@ -2,7 +2,7 @@
 
 An application-definition compiler that sits between application code and infrastructure-as-code. A caravan is your application as a graph of units that travels together and splits where deployment demands. Write one yaml describing the entry points, the SDK seams in the code, and the bound cloud resources; `caravan compile --target=<name>` emits auditable Terraform/HCL (cloud) or `docker-compose.generated.yaml` (local) into `infra/<target>/generated/`, and `caravan up --target=<name>` applies the emitted spec. The emit/apply split is by design — auditable HCL means HCL on disk between the two commands, not buried in a one-shot deploy.
 
-An application is a graph of components connected through the `caravan-rpc-<lang>` SDK at each inter-component **seam**. caravan lets one yaml project that graph onto any point in three orthogonal dimensions, with the source code unchanged.
+An application is a graph of components connected through the `caravan-rpc` SDK at each inter-component **seam**. caravan lets one yaml project that graph onto any point in three orthogonal dimensions, with the source code unchanged.
 
 The three dimensions:
 
@@ -20,7 +20,7 @@ This repo is **scoping-stage**: thesis + evidence catalogs, no implementation ye
 
 The PoC narrows the full thesis into a testable subset built around three load-bearing pieces: an RPC SDK (the control-plane primitive that makes packaging yaml-only), a 10-group resource catalog (the data-plane), and a yaml spec that binds them with a worked example proving the thesis end-to-end. The PoC docs supersede module / bundle vocabulary used in older docs — see each PoC doc's own "vocabulary change" note.
 
-- [PoC inter-process RPC SDK](https://github.com/paulxiep/caravan/blob/main/docs/poc_rpc_sdk.md) - the `caravan-rpc-<lang>` SDK. Why it exists, wire contract, env-var contract, per-language surface (Python / Rust / TypeScript / Go).
+- [PoC inter-process RPC SDK](https://github.com/paulxiep/caravan/blob/main/docs/poc_rpc_sdk.md) - the `caravan-rpc` SDK. Why it exists, wire contract, env-var contract, per-language surface (Python / Rust / TypeScript / Go).
 - [PoC basic groups → 4-language code mapping](https://github.com/paulxiep/caravan/blob/main/docs/poc_groups_to_code.md) - 10 basic resource groups picked from the AWS catalog, mapped to cloud SDK call + local OSS call + env-var swap (or build-time dep selection for the Tier-1 `llm` group) per language.
 - [PoC yaml spec + worked example + testability plan](https://github.com/paulxiep/caravan/blob/main/docs/poc_yaml_spec.md) - the entries + seams + per-target dispatch yaml shape, the `smart-query` worked example with monolith / split / cloud / local target variants, end-to-end testability conditions.
 

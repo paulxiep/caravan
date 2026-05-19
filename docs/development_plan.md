@@ -12,7 +12,7 @@ Scoping-complete, code-empty. The CLI stub at [../cmd/caravan/main.go](../cmd/ca
 
 The compiler has five phases per [ir.md](ir.md): Lex → Parse → Normalize → Resolve → Emit. Output: HCL + docker-compose + per-target manifest patches + `CARAVAN_RPC_PEERS` env var.
 
-The structural contract is the `caravan-rpc-<lang>` SDK at seams: `@interface` + `provide(X, impl)` + `client(X)`.
+The structural contract is the `caravan-rpc` SDK at seams: `@wagon` + `provide(X, impl)` + `client(X)`.
 
 ### Three organizing principles
 
@@ -86,8 +86,8 @@ The chicken-and-egg breaker. No compiler. No proc-macros. We hand-author a minim
 - invoice-parse's existing per-service Dockerfile + profile-based compose already mirrors what Caravan emits.
 
 **Work:**
-1. **`caravan-rpc-py` package** (in caravan repo, hand-typed — not generated): `@interface` decorator, `provide(X, impl)` registry, `client(X)` dispatcher that reads `CARAVAN_RPC_PEERS` env var. aiohttp or stdlib HTTP server adapter. `requests` or `httpx` client adapter. **No-config-inertness baked in**: when env var is unset, `client(X).method()` is a direct function call on the registered impl.
-2. **invoice-parse `caravan-conversion` branch**: refactor `LLMExtractor` ABC into `@interface LLMExtraction`; replace factory with `provide(LLMExtraction, GeminiExtractor())`. Call sites in [../../invoice-parse/services/processing/invoice_processing/worker.py](../../invoice-parse/services/processing/invoice_processing/worker.py) change from `extractor.extract(...)` to `client(LLMExtraction).extract(...)`.
+1. **`caravan-rpc-py` package** (in caravan repo, hand-typed — not generated): `@wagon` decorator, `provide(X, impl)` registry, `client(X)` dispatcher that reads `CARAVAN_RPC_PEERS` env var. aiohttp or stdlib HTTP server adapter. `requests` or `httpx` client adapter. **No-config-inertness baked in**: when env var is unset, `client(X).method()` is a direct function call on the registered impl.
+2. **invoice-parse `caravan-conversion` branch**: refactor `LLMExtractor` ABC into `@wagon LLMExtraction`; replace factory with `provide(LLMExtraction, GeminiExtractor())`. Call sites in [../../invoice-parse/services/processing/invoice_processing/worker.py](../../invoice-parse/services/processing/invoice_processing/worker.py) change from `extractor.extract(...)` to `client(LLMExtraction).extract(...)`.
 3. **Hand-edited compose override** at `invoice-parse/infra/docker-compose.caravan-bootstrap.yaml` injecting `CARAVAN_RPC_PEERS` env var into the `processing` service and adding an optional `llm-extractor` sidecar for HTTP-mode tests.
 
 **Acceptance — six criteria in increasing strictness:**
@@ -105,8 +105,8 @@ The chicken-and-egg breaker. No compiler. No proc-macros. We hand-author a minim
 While B0 lands the Python contract, code-rag's `caravan-conversion` branch progresses against a hand-typed Rust stub.
 
 **Work:**
-- Caravan repo: add `caravan-rpc-rust-stub` crate with hand-typed Rust trait shapes + a stub dispatcher matching the spec. Not a real proc-macro; hand-written impls only.
-- code-rag `caravan-conversion` branch: introduce `caravan-rpc-rust-stub` dependency. Declare Embedder + Reranker + VectorReader + LlmClient as `@interface`-typed traits via hand-typed code. Swap `state.x.method()` → `client(X).method()` at all call sites.
+- Caravan repo: add `caravan-rpc-stub` crate with hand-typed Rust trait shapes + a stub dispatcher matching the spec. Not a real proc-macro; hand-written impls only.
+- code-rag `caravan-conversion` branch: introduce `caravan-rpc-stub` dependency. Declare Embedder + Reranker + VectorReader + LlmClient as `@wagon`-typed traits via hand-typed code. Swap `state.x.method()` → `client(X).method()` at all call sites.
 - Validate the Rust SDK shape against code-rag's `Mutex<Embedder>` interior-mutability case **before** the proc-macro lands at M2.
 
 **Acceptance:**
@@ -114,7 +114,7 @@ While B0 lands the Python contract, code-rag's `caravan-conversion` branch progr
 - Existing `docker compose up` works unchanged.
 - `cargo test` passes.
 - `trunk build --release --features standalone` still produces WASM artifact.
-- When real `caravan-rpc-rust` lands at M2, code-rag swaps stub for real — drop-in.
+- When real `caravan-rpc` lands at M2, code-rag swaps stub for real — drop-in.
 
 ### M0 — Compiler parses yaml and writes a file (2 sessions)
 
@@ -142,14 +142,14 @@ While B0 lands the Python contract, code-rag's `caravan-conversion` branch progr
 
 ### M2 — Rust SDK, code-rag flips one seam ⬅ CRITICAL THESIS PROOF (4–6 sessions)
 
-**Demo.** code-rag's Axum HTTP server runs under `caravan compile --target=dev-monolith` with Embedder going through real `caravan-rpc-rust`. yaml line changes `Embedder: container`, recompile + recompose. Same `curl /query`, same response, but `docker logs` shows the embedder responding via HTTP. `git diff -- crates/` is empty.
+**Demo.** code-rag's Axum HTTP server runs under `caravan compile --target=dev-monolith` with Embedder going through real `caravan-rpc`. yaml line changes `Embedder: container`, recompile + recompose. Same `curl /query`, same response, but `docker logs` shows the embedder responding via HTTP. `git diff -- crates/` is empty.
 
 **Prereqs.** M1; B0p (code-rag stub track already has SDK-wrapped call sites).
 
 **Work — three components in parallel:**
-1. **`caravan-rpc-rust` SDK**. `#[interface]` proc-macro emits trait + server-adapter + client-adapter. `provide::<dyn T>()` registry. `client::<dyn T>()` dispatcher reads `CARAVAN_RPC_PEERS`. axum HTTP server adapter on `/_caravan/rpc/<iface>/<method>`. **No-config inertness**: identical to Python — unset env var → direct call on registered impl. Start with hand-written adapters; lift to proc-macro after runtime is stable.
+1. **`caravan-rpc` SDK**. `#[wagon]` proc-macro emits trait + server-adapter + client-adapter. `provide::<dyn T>()` registry. `client::<dyn T>()` dispatcher reads `CARAVAN_RPC_PEERS`. axum HTTP server adapter on `/_caravan/rpc/<iface>/<method>`. **No-config inertness**: identical to Python — unset env var → direct call on registered impl. Start with hand-written adapters; lift to proc-macro after runtime is stable.
 2. **Compiler phase 4** (peer-table computation): per target, per deploy unit, compute `CARAVAN_RPC_PEERS` JSON — one entry per seam, each carrying that seam's mode independently. Phase 5 injects as `environment:`.
-3. **code-rag swap-in**: replace `caravan-rpc-rust-stub` dependency with real `caravan-rpc-rust`. No source changes at call sites (stub had the same API).
+3. **code-rag swap-in**: replace `caravan-rpc-stub` dependency with real `caravan-rpc`. No source changes at call sites (stub had the same API).
 
 **Acceptance.**
 - PoC testability conditions 5/6/7/8 from [poc_yaml_spec.md](poc_yaml_spec.md) §Testability pass when toggling `Embedder` between `inproc` and `container`.
@@ -159,7 +159,7 @@ While B0 lands the Python contract, code-rag's `caravan-conversion` branch progr
 - Single-binary entry: `cargo build --release -p code-rag-mcp` produces a stdio-mode binary that runs unchanged.
 
 **Risks.**
-- Rust proc-macro for `#[interface]` — generic erasure (`dyn T`), `async_trait`, JSON arg encoding. Budget for a redesign loop.
+- Rust proc-macro for `#[wagon]` — generic erasure (`dyn T`), `async_trait`, JSON arg encoding. Budget for a redesign loop.
 - "Both deploy units carry the embedder code in monolith mode, but only one runs it" — handle local-impl-inert correctly per [poc_rpc_sdk.md](poc_rpc_sdk.md) §3.
 - Bearer-secret strategy: lock to compiler-emitted hex for PoC; defer SSM persistence to v0.2.
 
@@ -200,14 +200,14 @@ While B0 lands the Python contract, code-rag's `caravan-conversion` branch progr
 **Prereqs.** M2; M4 (needs `search` resource group too).
 
 **Work** (per [../../code-rag/docs/caravan-readiness.md](../../code-rag/docs/caravan-readiness.md)):
-- Promote Embedder/Reranker to traits behind `#[interface]` (most of this is done by B0p).
+- Promote Embedder/Reranker to traits behind `#[wagon]` (most of this is done by B0p).
 - Split `VectorStore` → `VectorReader` + `VectorWriter` + separate `call_edges` resource.
 - Extract `code-rag-core` crate to break `code-rag-mcp`'s transitive dep on `code-rag-chat`.
 - Caravan-generated compose references existing [../../code-rag/dockerfile/Dockerfile](../../code-rag/dockerfile/Dockerfile) — do not restructure.
 
 **Acceptance.** code-rag's existing test suite + all 5 deployment surfaces still work (per pre-change-state verification commands). Zero source-code edits between targets.
 
-**Design pressure into SDK.** `Mutex<Embedder>` interior mutability forces `#[interface]` to handle `Arc<Mutex<dyn T>>` patterns. Likely SDK addition: documented `provide_shared(...)` variant.
+**Design pressure into SDK.** `Mutex<Embedder>` interior mutability forces `#[wagon]` to handle `Arc<Mutex<dyn T>>` patterns. Likely SDK addition: documented `provide_shared(...)` variant.
 
 ### M6 — invoice-parse full Caravan target (3–4 sessions)
 
