@@ -12,7 +12,7 @@ The three dimensions:
 
 A yaml `target:` names a point in (packaging × placement × composition). A repo declares many - `dev`, `hybrid-dev`, `staging`, `prod`, `pr-preview` - and `caravan up --target=<name>` flips between them. Same source code everywhere.
 
-This repo is **scoping-stage**: thesis + evidence catalogs, no implementation yet.
+**Current state**: scoping-complete; PoC bootstrap in progress. **Phase A** (claim SDK package names across PyPI / crates.io / npm / Go) is done — see Implementation roadmap below. **Phase B** (functional SDK + test-repo conversion) starts at B0. **Phase 2** (AWS coverage) is deferred until Phase 1 (docker-compose validation) is green on both test repos.
 
 ## Scoping documents
 
@@ -43,6 +43,19 @@ The PoC narrows the full thesis into a testable subset built around three load-b
 - [Abstraction v2](https://github.com/paulxiep/caravan/blob/main/docs/caravan_abstraction_v2.md) - prior long-form derivation, Python + Rust only. Historical record.
 - [Abstraction v1](https://github.com/paulxiep/caravan/blob/main/docs/caravan_abstraction_v1.md) - prior framing built around a Python SDK. Historical record.
 
+## Implementation roadmap
+
+- [Development plan](https://github.com/paulxiep/caravan/blob/main/docs/development_plan.md) — milestones B0 → M9 split into **Phase 1** (docker-compose + local-run, thesis-proving) and **Phase 2** (AWS coverage, deferred). Phase 1 alone proves the thesis on real code.
+- [SDK source of truth](https://github.com/paulxiep/caravan/tree/main/rpc) — `caravan/rpc/<lang>/` for Python, Rust, TypeScript, Go. Currently 0.0.1 placeholders that import-clean but don't dispatch; replaced by functional 0.1.0 at B0 (Python) and M2 (Rust). TypeScript and Go directories exist as namespace reservations; out of PoC scope.
+- **Published placeholders** (Phase A — 2026-05-19):
+  - PyPI: [`caravan-rpc` 0.0.1](https://pypi.org/project/caravan-rpc/)
+  - crates.io: [`caravan-rpc` 0.0.1](https://crates.io/crates/caravan-rpc)
+  - npm: [`caravan-rpc` 0.0.1](https://www.npmjs.com/package/caravan-rpc)
+  - Go: [`github.com/paulxiep/caravan/rpc/go` v0.0.1](https://pkg.go.dev/github.com/paulxiep/caravan/rpc/go)
+- **Test repos** (real-world design pressure for B0 / M5 / M6):
+  - [code-rag](https://github.com/paulxiep/code-rag) — 6-crate Rust workspace, RAG over code (M5 target; readiness rated HIGH ~80%).
+  - [invoice-parse](https://github.com/paulxiep/invoice-parse) — Python+Rust polyglot, OCR + LLM extraction (B0 bootstrap + M6 target; readiness rated HIGH ~85%).
+
 ## Status
 
-Pre-implementation. The thesis is load-bearing; everything in the companion docs is current evaluation that may shift. Implementation roadmap will land once v1 scope is locked.
+Phase A (squat) complete. Phase B (functional SDK on real test repos) is the active phase per [`docs/development_plan.md`](https://github.com/paulxiep/caravan/blob/main/docs/development_plan.md). The thesis is load-bearing; some evidence catalogs in `docs/` may still shift as Phase B surfaces ergonomics issues.
