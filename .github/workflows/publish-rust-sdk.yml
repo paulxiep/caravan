@@ -1,0 +1,82 @@
+name: Publish Rust SDK to crates.io
+
+# Manual-trigger workflow that publishes caravan-rpc (the Rust SDK at
+# rpc/rust/) to crates.io.
+#
+# crates.io does NOT support OIDC trusted publishers (as of late 2025) —
+# auth uses a static API token. We store it as a GitHub secret named
+# CARGO_REGISTRY_TOKEN, scoped to the `crates` environment.
+#
+# Setup (one-time):
+# 1. Generate a token: https://crates.io/me → Account Settings → API Tokens
+#    → New Token. Scopes for the first publish: publish-new + publish-update.
+#    (After the crate exists, regenerate with just publish-update and
+#    restrict to the "caravan-rpc" crate.)
+# 2. Create the GitHub environment: caravan repo Settings → Environments →
+#    New → name: `crates`. Optional: require reviewers + restrict to `main`.
+# 3. Add the secret: environment `crates` → Add secret →
+#    name: CARGO_REGISTRY_TOKEN, value: <paste the token from step 1>.
+#    (Storing as an environment secret rather than a repo secret means it's
+#    only available to jobs that opt into the `crates` environment, and
+#    benefits from any review rules on that environment.)
+#
+# Usage: bump version in rpc/rust/Cargo.toml, commit, trigger this workflow.
+# Default is dry-run; flip the input to publish for real.
+#
+# Reminder: crates.io publishes are IRREVERSIBLE after 72 hours. You can
+# `cargo yank` to mark a version unusable but the name + version stays
+# claimed forever. Use dry-run first.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (--dry-run, no actual publish). Flip to false to actually publish."
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    environment:
+      name: crates
+      url: https://crates.io/crates/caravan-rpc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rpc/rust/target
+          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('rpc/rust/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-publish-
+
+      - name: List files that will ship
+        working-directory: rpc/rust
+        run: cargo package --list
+
+      - name: Build + verify package
+        working-directory: rpc/rust
+        run: cargo package
+
+      - name: Publish (dry-run)
+        if: inputs.dry_run
+        working-directory: rpc/rust
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --dry-run
+
+      - name: Publish (REAL — irreversible after 72h)
+        if: '!inputs.dry_run'
+        working-directory: rpc/rust
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish

@@ -132,7 +132,7 @@ Per-language mechanism:
 | Rust | Patch `[dependencies]` table, modify features | adds `caravan-rpc = "1.0"`; cloud llm: `rig-core = { features = ["bedrock"] }` |
 | Python | Append/modify `requirements.txt` lines | adds `caravan-rpc==1.0`; cloud llm: `litellm[bedrock]>=1.0` |
 | TypeScript | Merge into `package.json` `dependencies` | adds `"@caravan/rpc": "^1.0"`; cloud llm: `"@ai-sdk/amazon-bedrock": "^0.x"` |
-| Go | Append `require` + `// +build` tagged source | adds `github.com/<org>/caravan-rpc-go` |
+| Go | Append `require` + `// +build` tagged source | adds `github.com/paulxiep/caravan/rpc/go` |
 
 User's on-disk manifest is untouched; the patched copy lives only in the per-target build context.
 

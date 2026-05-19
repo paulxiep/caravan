@@ -1,0 +1,42 @@
+[project]
+name = "caravan-rpc"
+version = "0.0.1"
+description = "Runtime SDK for the Caravan application-definition compiler. Pre-release placeholder."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Rachapong Chirarattananon" }]
+requires-python = ">=3.10"
+keywords = ["caravan", "rpc", "deployment", "infrastructure", "compiler"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Distributed Computing",
+]
+
+[project.urls]
+Homepage = "https://github.com/paulxiep/caravan"
+Repository = "https://github.com/paulxiep/caravan"
+Issues = "https://github.com/paulxiep/caravan/issues"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/caravan_rpc"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
+]

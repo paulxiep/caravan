@@ -226,7 +226,7 @@ CLI verb → phases:
 
 ## 4. Inter-module RPC — `caravan-rpc` SDK contract
 
-Per `considerations.md` item B disposition. Four libraries: `caravan-rpc-go`, `caravan-rpc`, `caravan-rpc`, `caravan-rpc-typescript`. Same wire contract; idiomatic surface per language.
+Per `considerations.md` item B disposition. Four libraries: Python `caravan-rpc` (PyPI), Rust `caravan-rpc` (crates.io), TypeScript `caravan-rpc` (npm), Go `github.com/paulxiep/caravan/rpc/go` (monorepo path, tagged `rpc/go/v<version>`). Same wire contract; idiomatic surface per language.
 
 Per-language surface (Python shown; others mirror):
 
@@ -281,7 +281,7 @@ interfaces:
 
 When present, phase 2 cross-checks `provides:` declarations and pre-wires IAM grants on Function URL ARNs.
 
-**Library home:** monorepo with `/sdk/<lang>/` directories, language-native package publishing on tag (`caravan-rpc-py-v0.1.0`, etc.).
+**Library home:** monorepo with `/rpc/<lang>/` directories, language-native package publishing on tag (`caravan-rpc-py-v0.1.0`, etc.).
 
 ---
 
@@ -378,7 +378,7 @@ Net: ~30 gaps, all closeable. Most via a single yaml field or a documented defau
 
 - **`bundles:` auto-bundling** when section is absent. Proposed: silent fallback (one bundle per module, named after the module). Confirm vs require explicit `bundles:` always.
 - **Inter-module Lambda auth.** Proposed: Function URL with `AuthType: AWS_IAM`. Confirm vs direct `lambda:Invoke`.
-- **`caravan-rpc-*` library home.** Proposed: monorepo with `/sdk/<lang>/`. Confirm vs four separate repos.
+- **`caravan-rpc-*` library home.** Proposed: monorepo with `/rpc/<lang>/`. Confirm vs four separate repos.
 - **Resource-name drift handling.** Proposed: convention `<app>-<resource>-<target>` + `caravan refresh` if drift. Accept vs Terraform-output read at compose-generation time.
 
 ---

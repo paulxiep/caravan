@@ -1,0 +1,67 @@
+name: Publish TS SDK to npm
+
+# Manual-trigger workflow that publishes caravan-rpc (the TypeScript SDK
+# at rpc/typescript/) to npm.
+#
+# npm supports OIDC trusted publishers (since July 2025) AND classic
+# automation tokens. For the first squat publish the package doesn't
+# exist yet, so we use an automation token; switch to OIDC after the
+# package is claimed if you prefer.
+#
+# Setup (one-time):
+# 1. Generate an npm Granular Access Token:
+#    https://www.npmjs.com/settings/<your-username>/tokens
+#    → "Generate New Token" → "Granular Access Token"
+#    → Permissions: "Read and write" on `caravan-rpc` (or "All packages"
+#      for the first publish since the package doesn't exist yet).
+#    → Skip 2FA (this is an automation token).
+#    → Expiration: longest you tolerate (1 year, etc).
+# 2. Create the GitHub environment `npm`:
+#    https://github.com/paulxiep/caravan/settings/environments → New → `npm`.
+#    Optional protection: required reviewer, restrict to `main` branch.
+# 3. Add the secret under environment `npm`:
+#    Name: NPM_TOKEN, value: <paste the npm token from step 1>.
+#
+# Usage: bump version in rpc/typescript/package.json, commit, trigger.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (--dry-run, no actual publish). Flip to false to publish."
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/caravan-rpc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: List files that will ship
+        working-directory: rpc/typescript
+        run: npm pack --dry-run
+
+      - name: Publish (dry-run)
+        if: inputs.dry_run
+        working-directory: rpc/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --dry-run --access public
+
+      - name: Publish (REAL)
+        if: '!inputs.dry_run'
+        working-directory: rpc/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public

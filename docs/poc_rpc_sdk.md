@@ -313,7 +313,7 @@ package main
 
 import (
     "github.com/example/myapp/shared/interfaces"
-    "github.com/anthropics/caravan-rpc-go"
+    caravanrpc "github.com/paulxiep/caravan/rpc/go"
 )
 
 type embedderImpl struct{ model FastEmbed }
@@ -337,7 +337,7 @@ package main
 
 import (
     "github.com/example/myapp/shared/interfaces"
-    "github.com/anthropics/caravan-rpc-go"
+    caravanrpc "github.com/paulxiep/caravan/rpc/go"
 )
 
 func main() {
@@ -386,12 +386,12 @@ Each language SDK implements this dispatcher idiomatically.
 
 ## 6. Library home + dep injection
 
-- **Monorepo layout**: `/sdk/python/`, `/sdk/rust/`, `/sdk/typescript/`, `/sdk/go/` — confirmed in [considerations.md item B](considerations.md).
+- **Monorepo layout**: `/rpc/python/`, `/rpc/rust/`, `/rpc/typescript/`, `/rpc/go/` — confirmed in [considerations.md item B](considerations.md).
 - **Per-language native packaging**:
   - Python → PyPI: `caravan-rpc`
   - Rust → crates.io: `caravan-rpc`
   - TypeScript → npm: `@caravan/rpc`
-  - Go → `github.com/<org>/caravan-rpc-go`
+  - Go → `github.com/paulxiep/caravan/rpc/go` (monorepo path; tag `rpc/go/v<version>`)
 
 **Caravan auto-patches the user's package manifest** to add the SDK dep. The user does *not* need to remember to `pip install caravan-rpc` or `cargo add caravan-rpc`. See [poc_yaml_spec.md "Manifest patching"](poc_yaml_spec.md#manifest-patching).
 

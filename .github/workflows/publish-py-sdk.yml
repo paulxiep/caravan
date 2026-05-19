@@ -1,0 +1,106 @@
+name: Publish Python SDK to PyPI
+
+# Manual-trigger workflow that builds caravan-rpc (the Python SDK at
+# rpc/python/) and publishes to PyPI via OIDC Trusted Publisher. No API
+# token in repo secrets — auth is via the PyPI publisher config tied to
+# this workflow filename + repo + environment.
+#
+# Setup (one-time):
+# 1. Create the GitHub environment `pypi` at:
+#      https://github.com/paulxiep/caravan/settings/environments
+#    Optional: add a required reviewer + restrict to `main` branch.
+# 2. Configure the Trusted Publisher on PyPI:
+#      https://pypi.org/manage/account/publishing/
+#    For a new project, use "Add a new pending publisher" with:
+#      Project name = caravan-rpc
+#      Owner        = paulxiep
+#      Repository   = caravan
+#      Workflow     = publish-py-sdk.yml
+#      Environment  = pypi
+# 3. After the first successful publish, the project exists on PyPI;
+#    the pending publisher becomes a regular Trusted Publisher.
+#
+# Usage: bump the version in rpc/python/pyproject.toml, commit, then
+# trigger this workflow via the Actions tab → "Run workflow".
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        required: true
+        default: "testpypi"
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: python -m pip install --upgrade build twine
+
+      - name: Build
+        working-directory: rpc/python
+        run: python -m build
+
+      - name: Check artifacts
+        working-directory: rpc/python
+        run: python -m twine check dist/*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: caravan-rpc-py-dist
+          path: rpc/python/dist/*
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    if: inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/caravan-rpc
+    permissions:
+      id-token: write   # OIDC
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: caravan-rpc-py-dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    if: inputs.target == 'pypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/caravan-rpc
+    permissions:
+      id-token: write   # OIDC
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: caravan-rpc-py-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
