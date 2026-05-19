@@ -2,7 +2,7 @@
 
 > A PoC-narrowed subset of the [12 per-language mapping docs](mapping_aws_to_python.md). Picks 10 basic groups from the [~36 AWS service role groups](aws_service_groups.md), defaults each to its cheapest-to-provision on-demand auto-scale option, and shows the cloud SDK call + local OSS call + env-var swap for each of [Python](mapping_aws_to_python.md), [Rust](mapping_aws_to_rust.md), [TypeScript](mapping_aws_to_typescript.md), and [Go](mapping_aws_to_go.md).
 >
-> **Data-plane vs control-plane.** This doc covers the **data-plane** — how user code calls cloud resources (S3, DynamoDB, SQS, …) with the same source in cloud and local environments. The **control-plane** — how user code calls *other parts of itself* across deploy units — is covered by [poc_rpc_sdk.md](poc_rpc_sdk.md) (the `caravan-rpc-<lang>` SDK + seam dispatch). Both are required for the PoC to demonstrate the thesis end-to-end.
+> **Data-plane vs control-plane.** This doc covers the **data-plane** — how user code calls cloud resources (S3, DynamoDB, SQS, …) with the same source in cloud and local environments. The **control-plane** — how user code calls *other parts of itself* across deploy units — is covered by [poc_rpc_sdk.md](poc_rpc_sdk.md) (the `caravan-rpc` SDK + seam dispatch). Both are required for the PoC to demonstrate the thesis end-to-end.
 >
 > Read order: [thesis.md](thesis.md) → [poc_rpc_sdk.md](poc_rpc_sdk.md) (control-plane) → this file (data-plane) → [poc_yaml_spec.md](poc_yaml_spec.md) (the entries + seams + targets yaml that exercises both).
 
@@ -212,7 +212,7 @@ User code stays identical across targets (calls the abstraction library's surfac
 
 The following are deliberately cut from PoC. All are recoverable from [ir.md](ir.md) and the full per-language mapping docs.
 
-**Vocabulary change since older drafts**: the original IR had `modules:` (code units) + `bundles:` (packaging groups). The PoC collapses these into the entries + seams shape in [poc_yaml_spec.md](poc_yaml_spec.md). The `interfaces:` top-level yaml block is no longer needed for interface declarations — interfaces live in code (declared via `@interface` per language); yaml's optional `seams:` block names them and points at the provider's source.
+**Vocabulary change since older drafts**: the original IR had `modules:` (code units) + `bundles:` (packaging groups). The PoC collapses these into the entries + seams shape in [poc_yaml_spec.md](poc_yaml_spec.md). The `interfaces:` top-level yaml block is no longer needed for interface declarations — interfaces live in code (declared via `@wagon` per language); yaml's optional `seams:` block names them and points at the provider's source.
 
 **Resource-level fields not in PoC**: `lifecycle:`, `variant:` (each group's PoC default fixes the variant); `composition: by-id` (v1 hybrid-debug feature).
 

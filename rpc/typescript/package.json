@@ -1,0 +1,34 @@
+{
+  "name": "caravan-rpc",
+  "version": "0.0.1",
+  "description": "Runtime SDK for the Caravan application-definition compiler. Pre-release placeholder.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "Apache-2.0",
+  "author": "Rachapong Chirarattananon",
+  "homepage": "https://github.com/paulxiep/caravan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paulxiep/caravan.git",
+    "directory": "rpc/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/paulxiep/caravan/issues"
+  },
+  "keywords": [
+    "caravan",
+    "rpc",
+    "deployment",
+    "infrastructure",
+    "compiler"
+  ],
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

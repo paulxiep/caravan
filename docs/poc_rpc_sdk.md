@@ -1,4 +1,4 @@
-# PoC inter-process RPC SDK (`caravan-rpc-<lang>`)
+# PoC inter-process RPC SDK (`caravan-rpc`)
 
 > The load-bearing primitive of the caravan thesis. User code writes `client::<Interface>().method()` once. The same call site dispatches as in-process function call (when provider lives in the same process), HTTP POST (when in a different container in the same compose runtime), or Lambda Function URL invoke (when in a different Lambda function) — without source-code edits. The yaml decides which.
 >
@@ -17,7 +17,7 @@ The **packaging** dimension is the load-bearing one. Without a primitive that ab
 
 The caravan-rpc SDK is what makes the claim hold. **It is the one structural contract caravan asks of the user**: write inter-component calls that *might* split through the SDK, not through hand-rolled HTTP. Once that contract is observed, the seam can be deployed inproc / container / lambda by yaml choice alone, with no code edits.
 
-**The unit of caravan's vocabulary is the seam.** A seam = an `@interface` declaration + its `provide(...)` impl + its `client(...)` call sites. Per seam, per target, [poc_yaml_spec.md](poc_yaml_spec.md) decides the dispatch mode.
+**The unit of caravan's vocabulary is the seam.** A seam = an `@wagon` declaration + its `provide(...)` impl + its `client(...)` call sites. Per seam, per target, [poc_yaml_spec.md](poc_yaml_spec.md) decides the dispatch mode.
 
 ### Without the SDK (anti-pattern, do not write this)
 
@@ -44,7 +44,7 @@ The api code assumes the embedder is reachable over HTTP. If both end up in the 
 # shared/interfaces.py — declared once, used by both sides:
 from caravan_rpc import interface
 
-@interface
+@wagon
 class Embedder:
     def embed(self, text: str) -> list[float]: ...
 ```
@@ -98,7 +98,7 @@ Authorization: AWS4-HMAC-SHA256 ...            # Lambda Function URL mode (SigV4
 {"args": [...], "kwargs": {...}}
 ```
 
-- `<interface>` and `<method>` map directly to the `@interface`-decorated class/trait and its methods.
+- `<interface>` and `<method>` map directly to the `@wagon`-decorated class/trait and its methods.
 - `args` carries positional arguments in declaration order; `kwargs` carries named arguments. Languages without kwargs (Rust, Go) populate only `args`.
 - JSON encoding: standard JSON for primitives + arrays + objects; binary fields use base64 in a `{"_bytes": "..."}` envelope; datetimes use ISO 8601 strings.
 
@@ -153,7 +153,7 @@ Phase 4 of the compiler injects three env vars per deploy unit.
 }
 ```
 
-Keys are **interface names** (from the user's code, declared via `@interface`).
+Keys are **interface names** (from the user's code, declared via `@wagon`).
 Values name the dispatch mode + endpoint for the seam.
 
 Phase-4 computation rules:
@@ -174,7 +174,7 @@ All four SDKs expose the same conceptual API (`interface` declaration, `provide`
 # shared/interfaces.py
 from caravan_rpc import interface
 
-@interface
+@wagon
 class Embedder:
     def embed(self, text: str) -> list[float]: ...
     def embed_batch(self, texts: list[str]) -> list[list[float]]: ...
@@ -203,7 +203,7 @@ embedder = client(Embedder)
 vec = embedder.embed("hello world")
 ```
 
-**Runtime reflection v1**: `@interface` captures method signatures via `inspect.signature`; argument types from annotations drive JSON (de)serialization. `provide(Cls, instance)` registers into the inproc registry plus, if any peer in `CARAVAN_RPC_PEERS` (anywhere in the deploy) marks this deploy unit as the http/lambda target for this interface, the SDK starts a lightweight HTTP server (uvicorn / aiohttp) on the listen port serving `/_caravan/rpc/...`. `client(Cls)` returns a proxy whose attribute access creates per-method dispatchers reading the peer entry.
+**Runtime reflection v1**: `@wagon` captures method signatures via `inspect.signature`; argument types from annotations drive JSON (de)serialization. `provide(Cls, instance)` registers into the inproc registry plus, if any peer in `CARAVAN_RPC_PEERS` (anywhere in the deploy) marks this deploy unit as the http/lambda target for this interface, the SDK starts a lightweight HTTP server (uvicorn / aiohttp) on the listen port serving `/_caravan/rpc/...`. `client(Cls)` returns a proxy whose attribute access creates per-method dispatchers reading the peer entry.
 
 ### 4.2 Rust
 
@@ -211,7 +211,7 @@ vec = embedder.embed("hello world")
 // shared/src/interfaces.rs
 use caravan_rpc::interface;
 
-#[interface]
+#[wagon]
 pub trait Embedder: Send + Sync {
     async fn embed(&self, text: String) -> Vec<f32>;
     async fn embed_batch(&self, texts: Vec<String>) -> Vec<Vec<f32>>;
@@ -252,7 +252,7 @@ async fn main() {
 }
 ```
 
-**Codegen at compile time**: `#[interface]` proc-macro emits two impls alongside the trait — an HTTP-server adapter that decodes JSON args / dispatches to the provided impl / encodes the result, and an HTTP-client adapter that implements the trait by POSTing to the peer. `provide::<dyn T>` registers; `client::<dyn T>` returns the right adapter (inproc-direct or HTTP-client) based on the runtime peer table.
+**Codegen at compile time**: `#[wagon]` proc-macro emits two impls alongside the trait — an HTTP-server adapter that decodes JSON args / dispatches to the provided impl / encodes the result, and an HTTP-client adapter that implements the trait by POSTing to the peer. `provide::<dyn T>` registers; `client::<dyn T>` returns the right adapter (inproc-direct or HTTP-client) based on the runtime peer table.
 
 ### 4.3 TypeScript
 
@@ -313,7 +313,7 @@ package main
 
 import (
     "github.com/example/myapp/shared/interfaces"
-    "github.com/anthropics/caravan-rpc-go"
+    caravanrpc "github.com/paulxiep/caravan/rpc/go"
 )
 
 type embedderImpl struct{ model FastEmbed }
@@ -337,7 +337,7 @@ package main
 
 import (
     "github.com/example/myapp/shared/interfaces"
-    "github.com/anthropics/caravan-rpc-go"
+    caravanrpc "github.com/paulxiep/caravan/rpc/go"
 )
 
 func main() {
@@ -386,12 +386,12 @@ Each language SDK implements this dispatcher idiomatically.
 
 ## 6. Library home + dep injection
 
-- **Monorepo layout**: `/sdk/python/`, `/sdk/rust/`, `/sdk/typescript/`, `/sdk/go/` — confirmed in [considerations.md item B](considerations.md).
+- **Monorepo layout**: `/rpc/python/`, `/rpc/rust/`, `/rpc/typescript/`, `/rpc/go/` — confirmed in [considerations.md item B](considerations.md).
 - **Per-language native packaging**:
   - Python → PyPI: `caravan-rpc`
   - Rust → crates.io: `caravan-rpc`
   - TypeScript → npm: `@caravan/rpc`
-  - Go → `github.com/<org>/caravan-rpc-go`
+  - Go → `github.com/paulxiep/caravan/rpc/go` (monorepo path; tag `rpc/go/v<version>`)
 
 **Caravan auto-patches the user's package manifest** to add the SDK dep. The user does *not* need to remember to `pip install caravan-rpc` or `cargo add caravan-rpc`. See [poc_yaml_spec.md "Manifest patching"](poc_yaml_spec.md#manifest-patching).
 

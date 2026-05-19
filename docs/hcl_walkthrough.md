@@ -515,7 +515,7 @@ volumes:
 ## 6. Cross-references
 
 - Source yaml shape and worked example: [poc_yaml_spec.md](poc_yaml_spec.md).
-- RPC SDK control-plane (`@interface` / `provide` / `client`, env-var contract, dispatch modes): [poc_rpc_sdk.md](poc_rpc_sdk.md).
+- RPC SDK control-plane (`@wagon` / `provide` / `client`, env-var contract, dispatch modes): [poc_rpc_sdk.md](poc_rpc_sdk.md).
 - Resource catalog (10 PoC basic groups, what caravan generates per group, per-language code patterns): [poc_groups_to_code.md](poc_groups_to_code.md).
 - Full IR (canonical reference, retains the original Module + Bundle two-layer structure for v1+): [ir.md](ir.md).
 - Cloud-projection mapping audit (~30 gaps with closure): [ir.md §6](ir.md#6-mapping-unambiguity-audit).

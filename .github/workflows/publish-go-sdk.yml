@@ -1,0 +1,91 @@
+name: Publish Go SDK (monorepo tag + Go proxy)
+
+# Manual-trigger workflow that tags this repo at rpc/go/v<version> and
+# pings proxy.golang.org so `go get github.com/paulxiep/caravan/rpc/go@v<version>`
+# resolves.
+#
+# Go has no central registry. With the monorepo-tag approach:
+#   - Module path: github.com/paulxiep/caravan/rpc/go
+#   - Tag format:  rpc/go/v<version>     (Go's nested-module convention)
+#   - go.mod      sits at rpc/go/go.mod with matching `module` line
+#
+# No PAT and no second repo. The workflow uses the auto-provided
+# GITHUB_TOKEN, scoped to this repo only.
+#
+# Setup: none required for auth. Optional: create a `go` environment with
+# required-reviewer gating if you want manual approval before publish.
+#
+# Usage: bump the Version constant in rpc/go/caravanrpc.go AND pass the
+# matching version as the workflow input, commit, trigger.
+#
+# Reminder: Go module versions are immutable once the proxy has indexed
+# them. Treat a successful publish as permanent.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (e.g. 0.0.1). Tagged as rpc/go/v<version>. Must match Version in caravanrpc.go."
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run (skip tag push). Flip to false to publish."
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  publish:
+    name: Tag rpc/go/v<version>
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # to push the tag
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify version matches caravanrpc.go
+        run: |
+          src=$(grep -oP 'const Version = "\K[^"]+' rpc/go/caravanrpc.go)
+          if [ "$src" != "${{ inputs.version }}" ]; then
+            echo "::error::Version mismatch — caravanrpc.go Version='$src' but input='${{ inputs.version }}'"
+            exit 1
+          fi
+          echo "Version match: v$src"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Verify build
+        working-directory: rpc/go
+        run: |
+          go vet ./...
+          go build ./...
+
+      - name: Create tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "rpc/go/v${{ inputs.version }}" -m "Caravan Go SDK v${{ inputs.version }}"
+
+      - name: Dry-run summary
+        if: inputs.dry_run
+        run: |
+          echo "DRY RUN — would push tag: rpc/go/v${{ inputs.version }}"
+          git show --stat "rpc/go/v${{ inputs.version }}" | head -20
+
+      - name: Push tag
+        if: '!inputs.dry_run'
+        run: git push origin "rpc/go/v${{ inputs.version }}"
+
+      - name: Ping Go proxy to cache the new version
+        if: '!inputs.dry_run'
+        run: |
+          curl -fsSL "https://proxy.golang.org/github.com/paulxiep/caravan/rpc/go/@v/v${{ inputs.version }}.info" \
+            && echo "Proxy fetched v${{ inputs.version }}.info" \
+            || echo "Proxy may take a few minutes to catch up; this is normal"
+          echo
+          echo "Published versions:"
+          curl -fsSL "https://proxy.golang.org/github.com/paulxiep/caravan/rpc/go/@v/list" || true

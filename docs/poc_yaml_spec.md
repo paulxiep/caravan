@@ -8,7 +8,7 @@
 
 If caravan didn't exist, user code uses direct function calls; the whole app compiles into one binary; one container; monolith. That's the baseline.
 
-Caravan's power is that the user can wrap any internal function call site in the SDK (`@interface` / `provide(...)` / `client::<X>()` — see [poc_rpc_sdk.md](poc_rpc_sdk.md)) and that call site becomes a **seam**: a candidate split point. Per seam, per target, yaml decides:
+Caravan's power is that the user can wrap any internal function call site in the SDK (`@wagon` / `provide(...)` / `client::<X>()` — see [poc_rpc_sdk.md](poc_rpc_sdk.md)) and that call site becomes a **seam**: a candidate split point. Per seam, per target, yaml decides:
 
 - `inproc` — provider stays in the entry's binary. No new deploy unit.
 - `container` — provider becomes its own container (compose service in dev; Fargate in cloud).
@@ -21,7 +21,7 @@ So the user picks the deploy topology by writing yaml decisions per seam per tar
 | Construct | What it is | Has its own |
 |---|---|---|
 | **entry** | A user-defined deploy root: an HTTP endpoint, a queue worker, a cron job. The user writes a Dockerfile for the monolith case (entry's binary + all the code its workspace pulls in). | Source path, Dockerfile, triggers, resource-usage list |
-| **seam** | An `@interface` declared in code. *May* be split off into its own deploy unit per target; otherwise stays inproc inside the entry. | Source path (sub-crate), Dockerfile (focused build), resource-usage list |
+| **seam** | An `@wagon` declared in code. *May* be split off into its own deploy unit per target; otherwise stays inproc inside the entry. | Source path (sub-crate), Dockerfile (focused build), resource-usage list |
 
 When a seam stays `inproc`, no new deploy unit. When a seam is `container` or `lambda`, caravan builds the seam's focused Dockerfile against its sub-crate and emits a separate deploy unit.
 
@@ -77,7 +77,7 @@ entries:
     uses:       [<resource-or-secret-name>...]         # data-plane only (resources + secrets)
 
 seams:                                                 # optional; caravan can also discover by scanning entries' source
-  <seam-name>:                                         # name must match `@interface <Name>` in code
+  <seam-name>:                                         # name must match `@wagon <Name>` in code
     path:       <path>                                 # sub-crate that hosts the provider
     dockerfile: <path>                                 # focused build, used only when this seam is split
     uses:       [<resource-or-secret-name>...]         # what the provider's code touches
@@ -122,7 +122,7 @@ The user's Dockerfile contract:
 
 Caravan patches the manifest in each build context per target with two categories of caravan-managed deps:
 
-1. **`caravan-rpc-<lang>` SDK** (always; user doesn't add it themselves).
+1. **`caravan-rpc` SDK** (always; user doesn't add it themselves).
 2. **Tier-1 hard-pair provider selection** for the `llm` group: which `rig-core` Cargo feature, `litellm[...]` extra, `@ai-sdk/...` npm peer, or Go build tag is included based on the resource's composition (see [poc_groups_to_code.md §10](poc_groups_to_code.md#10-llm)).
 
 Per-language mechanism:
@@ -132,7 +132,7 @@ Per-language mechanism:
 | Rust | Patch `[dependencies]` table, modify features | adds `caravan-rpc = "1.0"`; cloud llm: `rig-core = { features = ["bedrock"] }` |
 | Python | Append/modify `requirements.txt` lines | adds `caravan-rpc==1.0`; cloud llm: `litellm[bedrock]>=1.0` |
 | TypeScript | Merge into `package.json` `dependencies` | adds `"@caravan/rpc": "^1.0"`; cloud llm: `"@ai-sdk/amazon-bedrock": "^0.x"` |
-| Go | Append `require` + `// +build` tagged source | adds `github.com/<org>/caravan-rpc-go` |
+| Go | Append `require` + `// +build` tagged source | adds `github.com/paulxiep/caravan/rpc/go` |
 
 User's on-disk manifest is untouched; the patched copy lives only in the per-target build context.
 
@@ -281,7 +281,7 @@ The PoC is testable end-to-end when **all** of the following hold:
 
 ## Two-sided truth model
 
-The yaml is the source of truth for the **deploy graph**: which entries exist, which seams exist, what resources they bind, how seams dispatch per target. The yaml is NOT the source of truth for **interface shapes**: those live in code, declared via the SDK's per-language mechanism (`@interface` / `#[interface]` / `defineInterface` / `interface + go:generate`). The optional `seams:` yaml block names the seams and points at their source; it does not redeclare method signatures.
+The yaml is the source of truth for the **deploy graph**: which entries exist, which seams exist, what resources they bind, how seams dispatch per target. The yaml is NOT the source of truth for **interface shapes**: those live in code, declared via the SDK's per-language mechanism (`@wagon` / `#[wagon]` / `defineInterface` / `interface + go:generate`). The optional `seams:` yaml block names the seams and points at their source; it does not redeclare method signatures.
 
 ## Out of PoC scope
 
