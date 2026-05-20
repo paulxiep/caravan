@@ -1,0 +1,24 @@
+[package]
+name = "caravan-rpc-macros"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+authors = ["Rachapong Chirarattananon"]
+description = "Procedural macros for the Caravan RPC SDK."
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/paulxiep/caravan"
+homepage = "https://github.com/paulxiep/caravan"
+documentation = "https://docs.rs/caravan-rpc-macros"
+keywords = ["caravan", "rpc", "macros"]
+categories = ["development-tools::procedural-macro-helpers"]
+include = ["src/**/*", "README.md"]
+
+[lib]
+proc-macro = true
+path = "src/lib.rs"
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

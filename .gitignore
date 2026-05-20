@@ -1,2 +1,33 @@
 /*.md
 !/README.md
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+
+# Go
+/bin/
+*.exe
+*.test
+*.out
+
+# Rust
+target/
+# Library crates — Cargo.lock is generally not committed for libraries
+# (it would only constrain downstream users, not us). Both crates in
+# rpc/rust/ ship as libraries to crates.io.
+rpc/rust/Cargo.lock
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

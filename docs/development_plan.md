@@ -118,6 +118,47 @@ The chicken-and-egg breaker. No compiler. No proc-macros. We hand-author a minim
 
 **B0 is the lived spec for the SDK.** Once it works, every later milestone is "automate this proven shape." If B0 fails, the thesis is wrong before we burn compiler effort.
 
+**Progress (B0 — IN PROGRESS):**
+
+SDK (`caravan/rpc/python/`):
+- [x] `@wagon` decorator + tests — 2026-05-19 (9/9 tests pass; real LLMExtraction-shape covered: `Optional[X] | None = None` defaults, `Signature.bind(**kwargs)`, string annotations under `from __future__ import annotations`)
+- [x] inproc registry + `provide()` — 2026-05-19 (6/6 tests pass; thread-safe via `Lock`; `provide()` rejects non-`@wagon` interfaces; `lookup()` raises clear `LookupError` naming the missing interface)
+- [x] `pydantic.TypeAdapter` codec — 2026-05-19 (12/12 tests pass; unified codec for dataclasses + Pydantic models + Optional defaults + primitives + unannotated passthrough; string annotations resolved via `typing.get_type_hints` with module globalns; full JSON wire roundtrip verified; adapters cached per `(interface, method)`)
+- [x] `client(I)` proxy — 2026-05-19 (16/16 tests pass; **no-config inertness verified**: env-unset → `client(I).method == impl.method` (`MethodType` equality, same `__self__`); HTTP dispatch via stdlib `urllib.request` exercising encode→POST→decode; `Authorization: Bearer` from `CARAVAN_RPC_SHARED_SECRET`; `X-Caravan-Rpc-Version: 1`; remote-error envelope → `RpcRemoteError`; transport failures → `RpcTransportError`; lambda mode raises `NotImplementedError` deferred to M7; strict seam-method semantics — non-`@wagon` methods raise `AttributeError`)
+- [x] `python -m caravan_rpc.serve` CLI — 2026-05-19 (12/12 tests pass incl. real-HTTP end-to-end roundtrip on ephemeral port: encode→POST→decode→Pydantic reconstruct; bearer-auth enforcement; wire-version header check; remote exception → `RpcRemoteError`; `--impl module:Class` resolution defaults `--interface-module` to the impl's module so invoice-parse's same-file interface+impl layout works without extra flags)
+- [x] **SDK smoke against real invoice-parse types** — 2026-05-19. In invoice-parse `.venv`: codec `_adapters_for(LLMExtraction, 'extract')` builds `TypeAdapter(Union[RawOcrOutput, NoneType])` (dataclass + Optional), `TypeAdapter(Union[TableExtractionOutput, NoneType])`, and `TypeAdapter(InvoiceExtraction)` (Pydantic BaseModel). No type-resolution errors. `_resolve_interface_and_impl('LLMExtraction', 'invoice_processing.extraction:GeminiExtractor', None)` resolves both correctly via the same-module default. `client(LLMExtraction).extract` returns the bound method of the registered `GeminiExtractor` — inertness verified end-to-end on the real refactor.
+
+**Publish flow (gated at Phase 2 close — M9-cloud):**
+
+The 0.0.1 PyPI placeholder already reserves the name. The 0.1.0 first-functional release waits until **M9-cloud (Phase 2 close)** — by then the SDK contract has been validated against compose AND Fargate AND Lambda, with both Python and Rust SDKs exercised. Through the entire B0 → M9-cloud run, test repos pull caravan-rpc via local-editable install (or git URL pinning a SHA).
+
+- [ ] **Local-editable install** through B0 → M9-cloud — `pip install -e <caravan>/rpc/python` (or `pip install "caravan-rpc @ git+https://github.com/paulxiep/caravan.git@<sha>#subdirectory=rpc/python"` for CI/cross-machine). SDK version stays at `0.1.0.dev0`.
+- [ ] **TestPyPI publish at 0.1.0rc1** — smoke after M9-cloud close: prove the wheel installs cleanly in a fresh venv.
+- [ ] **PyPI publish at 0.1.0** — once rc1 smoke passes. By this point the SDK has been driven by hand-wired (B0), compiler-emitted (M1, M3), Rust interop (M2), and AWS placements (M7, M4-cloud). Wire-version-1 ABI is genuinely frozen at this point.
+
+invoice-parse `caravan-conversion` branch:
+- [x] `caravan-rpc` installed in `.venv` via editable path (`pip install -e ../caravan/rpc/python`). No PyPI version pin. — 2026-05-19
+- [x] `extraction.py` refactored — 2026-05-19. `LLMExtractor` ABC + `create_extractor` factory removed. New `@wagon class LLMExtraction:` interface (method-signature-only). `GeminiExtractor` / `ClaudeExtractor` / `OpenAIExtractor` dropped ABC inheritance, became plain classes.
+- [x] `worker.py` call site refactored — 2026-05-19. Imports: `LLMExtractor` + `create_extractor` dropped, `LLMExtraction` + `GeminiExtractor` added, `caravan_rpc.{client, provide}` added. `run_pipeline` no longer takes `extractor` param. Call site at line 184 swapped to `client(LLMExtraction).extract(...)`. `run_worker()` calls `provide(LLMExtraction, GeminiExtractor())` once at startup before the queue loop.
+- [x] `cli.py` call site refactored — 2026-05-19. `--provider` flag still works; chosen impl is registered via `provide()` before `client(LLMExtraction).extract(...)`. `create_extractor` factory removed.
+- [x] `infra/docker-compose.caravan-bootstrap.yaml` written — 2026-05-19. Override file injects `CARAVAN_RPC_PEERS` into `processing` and spawns an `llm-extractor` peer service reusing the processing image with overridden `command:` running `python -m caravan_rpc.serve`.
+- [x] `Dockerfile` + wheel-vendoring setup — 2026-05-19. caravan-rpc gets installed in the image from a vendored wheel at `services/processing/vendor/caravan_rpc-*.whl`, built locally via `infra/rebuild-caravan-rpc-wheel.sh`. The wheel is gitignored (build artifact); the script rebuilds it after any caravan-rpc source change. When caravan-rpc lands on PyPI post-M9-cloud, this swaps to a plain `pip install caravan-rpc==<ver>`.
+
+Six-criteria acceptance gate (extraction.json SHA-256 identical across runs):
+- [x] #1 Local-run, no env — 2026-05-19. cli.py against `invoices/sample_invoice.pdf`. `extraction.json` SHA = `3f3c0097226fec3d22d55c00a8a0c436b8bcfe9ad7aab13f33b2bde1364f2bf7`. Vendor=myAgency Ltd, 2766 CZK, 7 line items, 100% confidence. (Local venv needs `paddlex[ocr]` + `OCR_DET_MODEL=PP-OCRv5_mobile_det` + `OCR_REC_MODEL=en_PP-OCRv5_mobile_rec`; auto-downloads models on first run.)
+- [x] #2 Compose, no env — 2026-05-19. `docker compose -f infra/docker-compose.yaml --profile app up -d`, ingest enqueues sample_invoice.pdf as job `e70aa72d-...`, processing worker handles it inproc (env unset). Postgres `extraction_data` is **semantically identical** to #1 (deep dict equality). Confirms inertness path works inside container too.
+- [x] #3 Inproc with env — 2026-05-19. `CARAVAN_RPC_PEERS={"LLMExtraction":{"mode":"inproc"}}`. Same SHA as #1. Inproc-explicit path goes through the same inertness branch as no-env.
+- [x] #4 HTTP local (two-process) — 2026-05-19. `caravan_rpc.serve` background-spawned on port 8080; cli pointed at it. Same SHA as #1. HTTP encode→POST→decode preserved every byte through `pydantic.TypeAdapter` for the real `RawOcrOutput` / `TableExtractionOutput` / `InvoiceExtraction` types.
+- [x] #5 HTTP compose (override file) — 2026-05-19. `docker compose -f infra/docker-compose.yaml -f infra/docker-compose.caravan-bootstrap.yaml --profile app up -d` brings up `llm-extractor` peer service (same image, command `python -m caravan_rpc.serve --interface LLMExtraction --impl invoice_processing.extraction:GeminiExtractor --port 8080`). `processing` runs with `CARAVAN_RPC_PEERS={"LLMExtraction":{"mode":"http","url":"http://llm-extractor:8080"}}` injected. PDF job `4b31b715-...`'s `extraction_data` semantically identical to #1. 17 successful POST `/_caravan/rpc/LLMExtraction/extract` 200 responses in llm-extractor logs (one per ingested invoice). End-to-end HTTP dispatch through container DNS confirmed.
+- [x] #6 Source identical across runs — 2026-05-19. Verified via mtime check: source files last edited 22:00–22:01, all runs started ≥22:35. `git diff` between the working-tree state at any two run times is empty (no edits between criterion runs).
+
+Key decisions ratified during planning:
+- **Wire serialization:** `pydantic.TypeAdapter` built from `@wagon` method type hints, cached at decoration time. Pydantic v2 is a hard SDK dep.
+- **HTTP-mode topology:** separate compose service `llm-extractor` reusing the `processing` image with overridden `command:`. Not a K8s-style "sidecar" — an independent peer service. Same shape generalizes to M7-Fargate (sibling Task Definition) and M7-Lambda (Function URL with `caravan_rpc.lambda_handler` entry).
+- **HTTP server library:** stdlib `http.server` ThreadingHTTPServer (no extra deps).
+- **`provide()` invocation site:** worker/CLI startup, not module-import time.
+- **Bedrock/LLM provider swap:** out of B0 scope (that's resource composition at M4-cloud, orthogonal to seam dispatch).
+
 ### B0p — code-rag stub track (parallelizable with B0; not blocking)
 
 **Parallelization note.** This is the one milestone in the plan explicitly designed for concurrent execution — separate language (Rust), separate repo (code-rag), separate branch (`caravan-conversion`), no API surface dependency on B0's Python output beyond the shared spec. If you have multiple sessions / people, **run B0 and B0p concurrently**. If solo, either ordering works: parallel (context-switch cost, but both branches stay alive) or sequential B0 → B0p (let Python's SDK lessons inform the Rust trait surface, slightly lower churn risk). All other milestones in the plan are strictly sequential.
@@ -136,6 +177,54 @@ While B0 lands the Python contract, code-rag's `caravan-conversion` branch progr
 - `trunk build --release --features standalone` still produces WASM artifact.
 - When real `caravan-rpc` lands at M2, code-rag swaps stub for real — drop-in.
 
+**Progress (B0p — IN PROGRESS):**
+
+SDK (`caravan/rpc/rust/`):
+- [x] Workspace restructure: `caravan-rpc/` + new sibling `caravan-rpc-macros/` (proc-macro = true) — 2026-05-20 (single-crate placeholder → two-crate workspace; `LICENSE` / `README.md` / `src/lib.rs` moved under `caravan-rpc/`; root `Cargo.toml` becomes a workspace manifest)
+- [x] Identity `#[wagon]` attribute macro in `caravan-rpc-macros` — 2026-05-20 (returns input unchanged; M2 will replace with adapter codegen; visual surface in code-rag matches the M2 target byte-for-byte)
+- [x] Functional inproc registry — 2026-05-20 (`TypeId`-keyed `RwLock<HashMap<TypeId, Box<dyn Any + Send + Sync>>>`; `provide::<T: ?Sized + Send + Sync + 'static>(Arc<T>)`; `client::<T>() -> Arc<T>` + `try_client::<T>() -> Option<Arc<T>>` + `is_provided::<T>()`; no-config inertness verified — env-unset → straight registry lookup with zero overhead beyond `Arc::clone`)
+- [x] Loud-fail guards for non-inproc dispatch — 2026-05-20 (`CARAVAN_RPC_PEERS` containing `"http"` panics naming M2; `"lambda"` panics naming M7; coarse string match avoids committing to the JSON schema before M2)
+- [x] Registry integration tests — 2026-05-20 (9/9 pass: `provide`/`client` roundtrip, last-write-wins re-register, panic when no impl, `try_client`+`is_provided`, inproc-mode env behaves like unset, http-mode env panics with M2 pointer, lambda-mode env panics with M7 pointer, distinct traits keyed independently by `TypeId`, `Arc` clone semantics — `EnvVarGuard` serializes env-touching tests; unique marker traits keep registry-only tests parallel-safe)
+- [x] Publish workflow updated for two-crate workspace — 2026-05-20 (`publish-rust-sdk.yml` publishes `caravan-rpc-macros` first, sleeps 60s for crates.io indexing, then publishes `caravan-rpc`; defaults to dry-run)
+- [x] `cargo clippy --workspace --all-targets` clean — 2026-05-20
+- [x] `cargo fmt --all` clean — 2026-05-20
+
+**Publish flow (gated at PR/MR merge):**
+
+The on-crates.io 0.0.1 placeholder is unchanged. Local crates remain at `0.0.1` through B0p iteration per user direction ("we should only bump publish on full PR/MR"). The coordinated `0.0.2` bump + publish for both `caravan-rpc` and `caravan-rpc-macros` lands at PR-merge time.
+
+- [ ] **Local-path-dep** consumed by code-rag through B0p — `caravan-rpc = { path = "../caravan/rpc/rust/caravan-rpc" }`
+- [ ] **0.0.2 bump + crates.io publish** at PR-merge (both crates in lockstep; macros first, runtime second)
+
+code-rag `caravan-conversion` branch:
+- [x] `caravan-rpc` added via workspace path-dep across `code-rag-chat` (root), `code-rag-store`, `code-rag-mcp`, `code-raptor`. **Not** added to `code-rag-engine` / `code-rag-ui` (those compile to `wasm32-unknown-unknown`). `async-trait = "0.1"` added as direct dep where needed (0.1.89 resolved). — 2026-05-20
+- [x] Seam declarations in `crates/code-rag-store/src/seams.rs`: `Embedder`, `Reranker`, `VectorReader`, `LlmClient` — all `#[wagon]`, `&self` only (Mutex moves into impls), `Reranker::rerank` keeps owned `Vec<String>` for the cross-encoder, `VectorReader` covers all 13 read methods + call-graph reads, `LlmError` defined locally so the trait can live alongside the others. — 2026-05-20
+- [x] **B3a Embedder:** `Embedder` struct → `FastEmbedImpl`; interior `std::sync::Mutex<TextEmbedding>`; `EmbedError::Poisoned` variant; impl `seams::Embedder`. Call sites swap to `&dyn Embedder` parameter; AppState's `tokio::sync::Mutex<Embedder>` becomes `Arc<dyn Embedder>`. — 2026-05-20
+- [x] **B3b Reranker:** `Reranker` struct → `MsMarcoRerankerImpl`; interior `std::sync::Mutex<TextRerank>`; `RerankError::Poisoned` variant; impl `seams::Reranker`. AppState's `Option<tokio::sync::Mutex<Reranker>>` becomes `Option<Arc<dyn Reranker>>`. — 2026-05-20
+- [x] **B3c VectorReader:** `impl crate::seams::VectorReader for VectorStore` with all 16 read methods delegating via UFCS to inherent methods of the same name; writes stay on the concrete `VectorStore`. — 2026-05-20
+- [x] **B3d LlmClient:** `LlmClient` struct → `RigGeminiImpl`; module-level free `async fn generate` absorbed into trait method; chat-side `EngineError` gains `#[from] LlmError`; `ApiError::From<LlmError>` added. — 2026-05-20
+- [x] **B4 + B5:** AppState stripped to `{ classifier, config }`; seam impls constructed in `from_config` and registered via `caravan_rpc::provide::<dyn I>(...)`; **every call site swapped to `caravan_rpc::client::<dyn I>().method(...)`** in `src/api/handlers.rs`, `src/engine/retriever.rs`, `src/harness/runner.rs`, `crates/code-rag-mcp/src/main.rs`; `retrieve()` and `runner::run_all()` signatures take `&dyn …`. — 2026-05-20
+
+Verification gate:
+- [x] `cargo check --workspace` clean (caravan + code-rag) — 2026-05-20
+- [x] `cargo test --workspace` green (all test suites, no regression vs baseline) — 2026-05-20
+- [x] `cargo clippy --workspace --all-targets` (caravan SDK clean; code-rag has only pre-existing warnings unrelated to B0p) — 2026-05-20
+- [x] `cargo fmt --all` clean (both repos) — 2026-05-20
+- [x] `cargo build --release -p code-rag-chat` succeeds — 2026-05-20
+- [x] `cargo build --release -p code-rag-mcp` succeeds independently — 2026-05-20
+- [x] `cargo run --release -p code-rag-chat -- --health` exits 0 with **no env var** (no-config inertness confirmed) — 2026-05-20
+- [ ] `trunk build --release --features standalone` re-run (engine/UI not consumers of `caravan-rpc`, so unchanged — defer unless WASM bundle changes)
+- [ ] `docker compose build` re-run
+
+Key decisions ratified during B0p:
+- **`#[wagon]` ships now as identity proc-macro** (separate `caravan-rpc-macros` crate). Visual surface in code-rag matches M2 target byte-for-byte; no source-file churn at M2.
+- **Full code-rag refactor** (concrete structs → traits, Mutex moves inside impls, every call site swapped). The dev plan flagged the `Mutex<Embedder>` interior-mutability case as the load-bearing thing B0p must validate; that's now exercised end-to-end.
+- **Local path-dep** during iteration; **no version bumps mid-iteration** (per user direction). 0.0.2 bump + crates.io publish are gated to the PR/MR merge.
+- **Optional seam handling:** `try_client::<T>() -> Option<Arc<T>>` SDK helper (cleaner than a sentinel `NoopReranker` impl). Used for Reranker, which the chat target may run without.
+- **VectorWriter / call-edges resource split deferred to M5** per dev plan. B0p's `VectorReader` covers reads only; writes stay on the concrete `VectorStore`.
+
+See [../PoC-B0p.md](../PoC-B0p.md) for a full milestone write-up.
+
 ### M0 — Compiler parses yaml and writes a file (2 sessions)
 
 **Demo.** `caravan compile --target=dev` reads `caravan.yaml`, prints normalized Plan as JSON, writes placeholder `infra/dev/generated/main.tf` + `docker-compose.generated.yaml`. `caravan spec --json` round-trips.
@@ -150,15 +239,65 @@ While B0 lands the Python contract, code-rag's `caravan-conversion` branch progr
 
 **Decision gate before M0.** Ratify Go for v0.1 compiler (recommended; already aligned with stub CLI).
 
-### M1 — Compiler emits docker-compose, runs invoice-parse (2 sessions)
+**Go conventions — what to commit.** `go.mod` (module declaration; analog of `Cargo.toml` / `package.json`) and `go.sum` (content-hash lock; analog of `Cargo.lock` / `package-lock.json`) **both go in the commit**. caravan is a binary, so committing `go.sum` is mandatory for reproducible builds; for pure libraries the old "don't commit go.sum" advice has been superseded — commit it either way. The pattern matches B0p's Rust `Cargo.toml` (committed) + `Cargo.lock` (gitignored for libraries per [the Rust SDK gitignore note](../.gitignore)), with the caveat that **Go's default is the opposite of Rust's library convention** — go.sum is committed even for libraries.
 
-**Demo.** `caravan compile --target=dev-bootstrap` against the B0 yaml produces an `infra/dev-bootstrap/generated/docker-compose.generated.yaml` byte-equivalent (modulo formatting) to the hand-edited B0 override. `docker compose up` works identically.
+**Progress (M0 — DONE):**
+
+Compiler scaffold (`caravan/internal/compiler/`):
+- [x] `internal/compiler/kinds.go` — enums for `ResourceKind`, `TriggerKind`, `RuntimeKind`, `CompositionMode`, `EntryDispatchMode`, `SeamDispatchMode` with `IsValid()` helpers — 2026-05-20
+- [x] `internal/compiler/types.go` — IR structs (`Plan`, `Entry`, `Seam`, `Resource`, `Secret`, `Target`, `Trigger`, `ResolvedPlan`, `PeerEntry`, `Span`) per PoC's flatter entries+seams shape — 2026-05-20
+- [x] `internal/compiler/diag.go` — `Diagnostics` collector with `Error()` / `Warn()` + `WriteTo()` in `file:line:col: severity: message` form — 2026-05-20
+- [x] `internal/compiler/lex.go` — Phase 1: file → `yaml.Node` tree via `gopkg.in/yaml.v3`, source spans preserved — 2026-05-20
+- [x] `internal/compiler/traverse.go` — declarative yaml-stepping helpers (`forEachKV`, `forEachItem`, `dispatchFields`, `mappedItems`) — 2026-05-20
+- [x] `internal/compiler/parse.go` — Phase 2: schema validation via per-field `fieldMap`s; tagged-union dispatch (`triggerParsers` map) on trigger kind and resource type; generic `parseEnumMap[T]` for the target sub-maps — 2026-05-20
+- [x] `internal/compiler/normalize.go` — Phase 3 as named pipelines: `applyDefaults` (seam `service_name` kebab-case fallback) → `runValidators` (7 cross-ref + invariant checks, all run unconditionally so diagnostics surface together) — 2026-05-20
+- [x] `internal/compiler/resolve.go` — Phase 4 (narrowed): per-mode `peerBuilders` map + named helpers; deterministic alphabetic ordering. No IAM / networking / secret resolution (deferred to M4-cloud / M7) — 2026-05-20
+- [x] `internal/compiler/compile.go` — top-level `CompileFile` (phases 1–3) and `CompileFileForTarget` (phases 1–4) — 2026-05-20
+- [x] `cmd/caravan/main.go` — subcommand router (`check`, `spec`, `compile`, `--version`) using stdlib `flag` — 2026-05-20
+- [x] `go.sum` ready to commit (committed alongside `go.mod` per Go convention) — 2026-05-20
+
+Test infrastructure (`caravan/internal/compiler/testdata/`):
+- [x] `invoice-parse-bootstrap.yaml` — copy of `invoice-parse/caravan.yaml` — 2026-05-20
+- [x] `invoice-parse-bootstrap.dev-bootstrap.spec.json` + `.dev-inproc.spec.json` — golden outputs, refreshed via `go test -update` — 2026-05-20
+- [x] `TestSpecJSON` (2 subtests): golden-file match for both targets — 2026-05-20
+- [x] `TestSpecMatchesB0HandEdit`: pins `EnvVars.processing.CARAVAN_RPC_PEERS` to B0's exact string — 2026-05-20
+- [x] `TestNormalizeErrors` (5 subtests): unknown `uses:` ref, duplicate seam, unknown resource type, container seam without `impl:`, missing top-level `name:` — 2026-05-20
+
+invoice-parse `caravan-conversion` branch:
+- [x] `invoice-parse/caravan.yaml` authored at repo root with `LLMExtraction` seam carrying `impl:` + `service_name:` fields — 2026-05-20
+
+End-to-end acceptance:
+- [x] `caravan check` from invoice-parse working dir exits 0 — 2026-05-20
+- [x] `caravan spec --target=dev-bootstrap` emits `EnvVars.processing.CARAVAN_RPC_PEERS = {"LLMExtraction":{"mode":"http","url":"http://llm-extractor:8080"}}` — byte-for-byte match with B0's hand-edited override file — 2026-05-20
+- [x] `caravan compile --target=dev-bootstrap` writes placeholder `infra/dev-bootstrap/generated/{main.tf, docker-compose.generated.yaml}` (real emission lands at M1) — 2026-05-20
+- [x] `go test ./...` green (8/8 tests pass) — 2026-05-20
+
+### M1 — Compiler emits docker-compose override, runs invoice-parse (2 sessions)
+
+**Demo.** `caravan compile --target=dev-bootstrap` against the B0 yaml writes `infra/dev-bootstrap/generated/docker-compose.override.generated.yaml`, a compose **override** layered atop the hand-authored base. Semantically equivalent to the hand-edited `infra/docker-compose.caravan-bootstrap.yaml` from B0 — same `CARAVAN_RPC_PEERS` injection on `processing`, same `llm-extractor` peer service. `docker compose -f base -f generated up` runs identically to the hand-edited B0 path.
 
 **Prereqs.** M0; B0.
 
-**Work.** Phase-5 compose emitter. Maps `entries.X.dockerfile` → compose `build:` block. Resource emitter for `db.sql` (Postgres) and `cache` (Redis) groups — emit equivalents of existing service definitions in invoice-parse compose.
+**Scope: override-only.** The earlier ambition of emitting a full-compose alongside is **deferred to M6**. Reason: invoice-parse's resources (postgres, redis, blob storage) aren't yet caravan-declared, and the `model-init` service has bespoke inline Python that doesn't fit the yaml schema. M1 stays focused on the delta-override path; full-compose reconstruction lands when M6 brings invoice-parse's other resources under caravan declaration.
 
-**Acceptance.** Generated compose matches hand-authored ground truth. invoice-parse pipeline runs end-to-end through Caravan-generated infra.
+**Work.** Phase-5 compose emitter (`internal/compiler/emit/compose.go`). One emitter: `EmitComposeOverride(*ResolvedPlan) []byte`. Per-language seam-server `command:` emission via a pluggable interface (M1 ships Python; M2 plugs in Rust). Yaml-spec extensions: `seams.X.impl: <module:Class>` and optional `seams.X.service_name`.
+
+**Acceptance.** Generated override produces the same extraction (semantic JSON equality) as B0's criterion #5 — sample_invoice.pdf run through `docker compose -f infra/docker-compose.yaml -f infra/dev-bootstrap/generated/docker-compose.override.generated.yaml --profile app up` matches `.b0-runs/c1/extraction.json`. 17 successful POSTs through the emitted `llm-extractor` service (one per ingested invoice).
+
+**Progress (M1 — DONE):**
+
+Compose emit (`caravan/internal/compiler/emit/`):
+- [x] `internal/compiler/emit/seam_server.go` — pluggable `SeamServerCommand` interface; `SeamServerCommands` map keyed by `Language`. Python implementation ships at M1 (`python -m caravan_rpc.serve --interface NAME --impl module:Class --port N`). `detectLanguage` heuristic reads `seam.Impl` shape. Rust (`LanguageRust`) is enumerated but its emitter lands at M2. — 2026-05-20
+- [x] `internal/compiler/emit/compose.go` — `EmitComposeOverride(*ResolvedPlan) []byte`. Builds the override yaml via `yaml.Node` for stable key order. `buildConsumerOverride` injects `CARAVAN_RPC_PEERS` + `CARAVAN_RPC_SHARED_SECRET` + `depends_on` edges to peer services. `buildSeamPeerService` dispatches via `SeamServerCommands[lang]`. Command-arg items use `DoubleQuotedStyle` to satisfy docker compose v2's schema (`command.N must be a string`). — 2026-05-20
+- [x] `cmd/caravan/main.go` — `compile --target=X` writes real `docker-compose.override.generated.yaml` for `runtime: docker-compose` targets (HCL still placeholder until M4-cloud). — 2026-05-20
+- [x] `internal/compiler/testdata/dev-bootstrap.override.golden.yaml` — golden file, refreshed via `go test -update`. — 2026-05-20
+- [x] `internal/compiler/emit/compose_test.go` — `TestEmitComposeOverride` (golden-file diff) + `TestEmitComposeMatchesB0Shape` (load-bearing substring assertions). — 2026-05-20
+
+End-to-end acceptance:
+- [x] `go test ./...` green (10/10 across `internal/compiler` + `internal/compiler/emit`). — 2026-05-20
+- [x] `docker compose -f infra/docker-compose.yaml -f infra/dev-bootstrap/generated/docker-compose.override.generated.yaml config --quiet` passes (schema-valid). — 2026-05-20
+- [x] M1 generated override + base compose → sample_invoice.pdf processing → postgres `extraction_data` **IDENTICAL** (deep dict equality) to `.b0-runs/c1/extraction.json` from B0. Confirms the M1-emitted compose dispatches LLMExtraction through the peer service end-to-end producing byte-equivalent outputs to the hand-edited B0 path. — 2026-05-20
+- [x] 15 successful `POST /_caravan/rpc/LLMExtraction/extract` 200s in `llm-extractor` logs during the test batch (15 of 17 enqueued jobs completed within the poll window; sample_invoice.pdf delivered cleanly). — 2026-05-20
 
 ### M2 — Rust SDK, code-rag flips one seam ⬅ CRITICAL THESIS PROOF (4–6 sessions)
 
@@ -184,6 +323,139 @@ While B0 lands the Python contract, code-rag's `caravan-conversion` branch progr
 - Bearer-secret strategy: lock to compiler-emitted hex for PoC; defer SSM persistence to v0.2.
 
 **Decision gates before M2.** Pin Rust SDK HTTP server (axum). Pin shared-secret strategy (compiler-emitted hex).
+
+**M2 plan ratified 2026-05-20** (see `caravan/.claude/plans/understand-caravan-thesis-read-tranquil-brooks.md` or equivalent plan file):
+
+Key decisions:
+- All 4 seams in scope (Embedder, Reranker, VectorReader, LlmClient). VectorReader's 16 methods + tuple returns + Option args drive worst-case proc-macro design.
+- Proc-macro handles **both sync and async traits** — sync uses `reqwest::blocking`, async uses async reqwest. Trait signatures in code-rag's `seams.rs` stay unchanged.
+- Peer service via **compiler-emitted synthetic Rust crate** per container-mode seam (`infra/<target>/generated/peers/<seam-kebab>/{Cargo.toml, src/main.rs, Dockerfile}`). User code stays at three-point contract (`#[wagon]` / `provide` / `client`).
+- Three targets to exercise per-seam mixability (user direction): `dev-monolith` (all inproc), `dev-split-light` (`Embedder: container`), `dev-split-mixed` (`Embedder` + `LlmClient` both `container`). All-4-container intentionally not a target (no extra proof, heavy infra).
+- Wire format byte-for-byte with Python (`preserve_order` on serde_json).
+- **One wagon = one peer service group** invariant: N call sites → 1 peer service per seam, never per call site. Compiler already enforces this for Python at M1; Rust path inherits.
+
+**Progress (M2 — IN PROGRESS):**
+
+Session 1 — SDK runtime scaffold (DONE 2026-05-20):
+- [x] [Cargo.toml](../rpc/rust/caravan-rpc/Cargo.toml) bumped to `0.1.0`; deps added (`serde`, `serde_json` with `preserve_order`, `reqwest` blocking+async, `axum`, `tokio`, `thiserror`); feature gates `default = ["client", "server"]` so `code-rag-engine`'s WASM build continues to work via `default-features = false`.
+- [x] [src/errors.rs](../rpc/rust/caravan-rpc/src/errors.rs) — `RpcRemoteError`, `RpcTransportError`, `RpcError` mirror the Python error split.
+- [x] [src/codec.rs](../rpc/rust/caravan-rpc/src/codec.rs) — `Request{args,kwargs}` / `Response::{Ok,Err}` envelope + `path_for(iface, method)` helper. 8 unit tests; `preserve_order` keeps map field order Python-compatible byte-for-byte.
+- [x] [src/peers.rs](../rpc/rust/caravan-rpc/src/peers.rs) — `PeerEntry::{Inproc, Http{url}, Lambda{function_url}}` + `parse(json) -> HashMap<String, PeerEntry>` + cached `peer_for(name)`. 7 unit tests; rejects unknown modes and missing URL fields. Bad JSON in env var loud-fails at first lookup.
+- [x] [src/dispatch.rs](../rpc/rust/caravan-rpc/src/dispatch.rs) — `dispatch_sync(base_url, iface, method, args) -> Result<Value, RpcError>` + `dispatch_async(...)` — the HTTP client helpers the proc-macro will call from generated client adapters. Gated behind `client` feature. 4 unit tests cover URL joining, bearer header format, status checks (incl. body truncation).
+- [x] [src/lib.rs](../rpc/rust/caravan-rpc/src/lib.rs) — re-exports new modules; removed the pre-M2 HTTP-mode panic (we are at M2 now); kept Lambda-mode panic with M7 pointer. `client::<T>()` retains B0p inproc behavior until Session 3 wires the proc-macro adapter discovery.
+- [x] [tests/registry.rs](../rpc/rust/caravan-rpc/tests/registry.rs) updated — `http_mode_env_falls_back_to_local_impl_until_session_3` replaces the pre-M2 panic test; all 9 integration tests green.
+- [x] `cargo test --workspace` clean (32 tests across lib + integration). `cargo clippy --workspace --all-targets -- -D warnings` clean. `cargo fmt --all` clean. `cargo check --workspace` from code-rag clean (downstream still builds). `cargo build --target wasm32-unknown-unknown --no-default-features -p caravan-rpc` succeeds — feature gating works.
+
+Session 2 — axum server + first hand-written adapter (DONE 2026-05-20):
+- [x] [src/server.rs](../rpc/rust/caravan-rpc/src/server.rs) — `MethodHandler` type alias (`Arc<dyn Fn(Bytes) -> Pin<Box<dyn Future<Output = Response>>>`); `RpcRouter::{new, add_method, into_axum_router}` builder; central axum POST handler that validates `X-Caravan-Rpc-Version`, optional `Authorization: Bearer`, interface-name match, method existence, then invokes the per-method handler. `serve_forever(addr, router)` for the synthetic peer crate's main.rs at Session 5.
+- [x] [tests/end_to_end_http.rs](../rpc/rust/caravan-rpc/tests/end_to_end_http.rs) — hand-coded `TestEmbedder` trait + `EchoEmbedder` impl + `TestEmbedderHttpClient` client adapter + `build_test_embedder_router` server adapter. The hand-written shape mirrors what the Session 3 proc-macro will emit, so the macro has a working reference. 5 tests cover: embed roundtrip (97/98/99/0 float bytes), zero-arg `dimension()` roundtrip, unknown-method → 404 + envelope, missing wire-version header → 400, bearer-auth-enforced 401/200 with secret configured.
+- [x] All 37 tests green (23 lib + 9 registry + 5 end-to-end); `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all` clean.
+- [x] Verified: sync trait method `client.embed(text)` called via `tokio::task::spawn_blocking` from inside a tokio test runtime works correctly — confirms the "sync trait + reqwest::blocking" design from M2 plan §Concerns #1.
+
+Session 3 — Proc-macro v1 (sync + owned-args path) (DONE 2026-05-20):
+- [x] [caravan-rpc-macros/Cargo.toml](../rpc/rust/caravan-rpc-macros/Cargo.toml) deps `syn 2 (features=full)`, `quote 1`, `proc-macro2 1`.
+- [x] [caravan-rpc-macros/src/lib.rs](../rpc/rust/caravan-rpc-macros/src/lib.rs) — `#[wagon]` parses `syn::ItemTrait`; conservative shape gate (`is_sync_owned_trait`) detects async (`async_trait` attr OR `async fn`) and borrowed-arg types (`&T`, `&[T]`, recursing through generic args). Eligible traits emit `<Trait>HttpClient` + `impl Trait for <Trait>HttpClient` (via `dispatch::dispatch_sync`) + `build_<trait_snake>_router(impl_arc) -> axum::Router` (one route per method, decodes args via `serde_json::from_value`, calls impl, encodes return).
+- [x] Wire-error model: macro-generated client adapter serializes the impl's full `Result<T, E>` over the wire (uses serde's default Result encoding). Server side wraps Ok value in `Response::ok`; client side deserializes Result<T,E> from `result` field. Diverges from Python's `{ok: false, error}` envelope for user errors — Rust uses in-band Result encoding because Rust error types are typically not constructable from `(code, message)` strings. Documented; cross-language interop tested at M9.
+- [x] All 4 code-rag traits hit the identity fallback at Session 3 — Embedder has `&str`, Reranker has `&str`, LlmClient/VectorReader have `#[async_trait]`. `cargo check --workspace` from code-rag still clean — zero source changes in code-rag.
+- [x] [tests/macro_sync_owned.rs](../rpc/rust/caravan-rpc/tests/macro_sync_owned.rs) — synthetic `DemoEmbedder` trait (owned `String` args, `Result<Vec<f32>, DemoError>` returns). 4 tests: embed roundtrip, batch roundtrip, zero-arg `dimension`, and `Err(DemoError::Empty)` passing through wire encoding.
+- [x] 41 total tests green (23 lib + 5 e2e + 4 macro + 9 registry). Clippy + fmt clean.
+
+Session 4-narrow — Borrowed args + inventory dispatcher (DONE 2026-05-20):
+- [x] Borrowed-arg lowering via `ArgLowering` — `&str` → decode `String`, pass `&name`; `&[&str]` → decode `Vec<String>`, build `Vec<&str>`, pass `&borrowed`; `&[T]` → decode `Vec<T>`, pass `&name`. Embedder's `embed_one(&self, text: &str)` + `embed_batch(&self, texts: &[&str])` now hit full codegen.
+- [x] [tests/macro_sync_borrowed.rs](../rpc/rust/caravan-rpc/tests/macro_sync_borrowed.rs) — 4 tests against `BorrowedEmbedder` trait byte-for-byte mirroring code-rag's Embedder: `&str` arg, `&[&str]` arg, no-arg, Err arm pass-through.
+- [x] [HttpAdapterFactory](../rpc/rust/caravan-rpc/src/lib.rs) — `inventory::submit!` from macro emits one per full-codegen trait; `client::<dyn T>()` looks up by `TypeId`, routes to `<Trait>HttpClient` when peer table says http.
+- [x] `__macro_support` module re-exports `serde_json`, `inventory`, `async_trait`, `axum` so user crate only declares `caravan-rpc` as a dep.
+- [x] **Edition + MSRV bumped** to `edition = "2024"`, `rust-version = "1.95"` (matched installed rustc; user direction 2026-05-20). Squat-era placeholder values (1.75 / 2021) replaced.
+- [x] **Edition 2024 made `env::set_var` unsafe — refactored tests to thread-local override** (`peers::__set_table_override_for_tests`) instead of mutating process env. Zero `unsafe` in tests; parallel-safe (per-thread); cleaner than the old `ENV_LOCK`-serialized approach. Removed the broad `panic_if_lambda_dispatch_configured` — Lambda panic now fires inline in `try_client` when an inventory factory exists AND peer table says Lambda, so it only triggers for full-codegen traits.
+- [x] [tests/registry.rs](../rpc/rust/caravan-rpc/tests/registry.rs) rewritten — `PeerOverride::set([...])` drop-guard replaces `EnvVarGuard`. New test `http_mode_override_returns_macro_generated_http_client` directly verifies the inventory + peer-table wiring: with HTTP override and registered local impl, `client::<dyn HttpSeam>()` returns the HttpClient adapter (Arc-pointer-distinct from the local impl).
+- [x] **Transitional `#[wagon(identity)]` opt-out** — applied to code-rag's Reranker because `fastembed::RerankResult` lacks serde. `#[wagon]` defaults to full codegen; `#[wagon(identity)]` forces identity expansion. Reranker stays identity until M5 where a `RerankResultWire` shim will land.
+- [x] code-rag verification: `cargo check --workspace` clean. Embedder hits full codegen (sync + borrowed lowerable), Reranker hits identity via explicit `#[wagon(identity)]`, LlmClient + VectorReader hit identity via `#[async_trait]` detection. Inventory entry present for Embedder.
+- [x] All 45 tests green (23 lib + 5 e2e + 4 owned-macro + 4 borrowed-macro + 9 registry). Clippy `-D warnings` clean. Fmt clean.
+
+Session 4-async (DONE 2026-05-20):
+- [x] `classify_trait` returns `TraitMode::{Sync, Async}` based on `#[async_trait]` attribute or `async fn` methods. Mixed-mode traits (some async, some sync) bail to identity. Same arg-lowering + return-no-borrow checks apply.
+- [x] `expand_trait` emits `#[async_trait::async_trait]` on the impl block when async. `emit_client_method` uses `dispatch_async(...).await` for async; `emit_server_handler` awaits the impl call for async. `async-trait` crate re-exported via `__macro_support` so user crates don't need a direct dep.
+- [x] [tests/macro_async.rs](../rpc/rust/caravan-rpc/tests/macro_async.rs) — `DemoLlmClient` (`#[async_trait]`, `async fn generate(&self, prompt: &str) -> Result<String, DemoLlmError>`). 2 tests: roundtrip + error-arm pass-through.
+- [x] **All four code-rag traits now classify correctly:**
+  - Embedder (sync + `&str` + `&[&str]`) → full codegen ✓
+  - Reranker → identity via explicit `#[wagon(identity)]` (fastembed::RerankResult lacks serde; M5)
+  - LlmClient (`#[async_trait]` + `&str` + serde-ready `String` / `LlmError`) → full codegen ✓
+  - VectorReader (`#[async_trait]` + many serde-ready `code_rag_types::*Chunk` returns) → full codegen ✓
+- [x] **LlmClient cannot be flipped to `container` at M2** despite full macro support — the `RigGeminiImpl` impl lives in the chat binary crate (`code-rag/src/engine/generator.rs`), not a library, so the synthetic peer crate can't import it. Move-to-library is an M3+ refactor.
+- [x] 47 Rust tests green; clippy + fmt clean; code-rag `cargo check --workspace` clean.
+
+Session 5 cleanup (DONE 2026-05-20):
+- [x] [code-rag/.gitignore](../../code-rag/.gitignore) — added `/infra/` + `/caravan.exe` so caravan-generated artifacts + the local caravan binary copy don't get committed.
+
+Session 5 — Compiler Rust path (DONE 2026-05-20):
+- [x] [internal/compiler/emit/seam_server.go](../internal/compiler/emit/seam_server.go) `detectLanguage` now distinguishes Rust (`crate::Type`) from Python (`module.path:Class`) by checking for `::` first. `LanguageRust` is intentionally absent from `SeamServerCommands` map — Rust peers don't use the command-override pattern.
+- [x] [internal/compiler/emit/rust_peer.go](../internal/compiler/emit/rust_peer.go) NEW — `EmitRustPeerCrate(seam, opts)` returns three file bodies (`Cargo.toml`, `src/main.rs`, `Dockerfile`). The synthetic `main.rs` constructs `<crate>::<Type>::new()`, calls `caravan_rpc::provide::<dyn <crate>::seams::<Iface>>(impl)`, builds the macro-generated `build_<snake>_router`, and `serve_forever`s. Cargo.toml has an empty `[workspace]` table so the peer is its own workspace (not absorbed into the user repo's workspace tree).
+- [x] [internal/compiler/emit/compose.go](../internal/compiler/emit/compose.go) `buildSeamPeerService` branches per-language: Python keeps M1's command-override shape; Rust emits `build:` pointing at `infra/<target>/generated/peers/<svc>/Dockerfile` with no `command:` (the synthetic binary is its own entrypoint).
+- [x] [cmd/caravan/main.go](../cmd/caravan/main.go) `writeRustPeerCrates` iterates the resolved target's container-mode Rust seams, computes path-resolution context (caravan-rpc + impl crate relative paths from the peer's Cargo.toml; in-Docker-context paths from the build root), calls `EmitRustPeerCrate`, and writes all three files plus a copy of the user repo's `Cargo.lock` into the peer dir.
+- [x] [code-rag/caravan.yaml](../../code-rag/caravan.yaml) authored with 2 targets active for M2: `dev-monolith` (all seams inproc) + `dev-split-light` (`Embedder: container`). `dev-split-mixed` deferred until async-trait macro support lands.
+- [x] **Cargo.lock-copy fix for transitive-dep determinism** — `cargo` in the synthetic peer's standalone workspace resolved `lance 1.0.1` (which has a `query depth limit overflow` bug in async block layout), while the user repo's workspace pinned `lance 1.0.0` via its lockfile. Root-cause fix: `writeRustPeerCrates` copies the user repo's `Cargo.lock` into the peer dir, so the peer inherits the user's tested version set. No `#![recursion_limit]` workaround in the synthetic main.rs.
+- [x] `caravan compile --target=dev-monolith` writes the override (env-only, no peer services). `caravan compile --target=dev-split-light` writes the override + `peers/embedder/{Cargo.toml, src/main.rs, Dockerfile, Cargo.lock}`. Both generations succeed; emitted artifacts validated by hand-reading.
+- [x] `go test ./...` clean; all 45 Rust tests clean.
+
+Session 5 — Known caveat (Session 6 to verify):
+- Local `cargo check` of the synthetic peer on Windows fails on a `cmake`/C-toolchain build script of a deep transitive dep (likely `lzma-sys` or similar via lancedb). Not a caravan issue — the Docker `rust:1.95` image has these tools by default. Verified at Session 6 via `docker compose build`.
+
+Session 6 — Acceptance battery (DONE 2026-05-21):
+
+**Architecture pivot: Option A** (user direction 2026-05-21). The synthetic-peer-with-its-own-Dockerfile approach was scrapped because it forced Caravan to pick rust + runtime image versions, fighting the "user owns Dockerfile" principle. Replaced with:
+
+- Synthetic peer crate is a workspace member of the user repo (`workspace.members += "infra/peers/*"`). Cargo's existing `cargo build --workspace` in code-rag's Dockerfile compiles peer binaries alongside the chat binary.
+- Compose's Rust-peer service reuses the user's chat image (same `dockerfile`, `target: chat`) with a `command:` override running `/app/caravan-peer-<svc>`. One image, multiple binaries, CMD-selected — matches Python's `llm-extractor` pattern (same image, command override) in spirit.
+- Caravan-emitted files per Rust peer: just `Cargo.toml` + `src/main.rs` (no Dockerfile, no .dockerignore, no Cargo.lock copy).
+- Peers live at `<user-repo>/infra/peers/<svc>/` — flat, one-level glob (Cargo doesn't expand multi-segment globs reliably). Caravan clears `infra/peers/` on each `caravan compile` so target switches yield only the current target's peers.
+
+**code-rag changes (one-time M2 prep, three small structural edits in user repo):**
+- [x] [code-rag/Cargo.toml](../../code-rag/Cargo.toml) — `workspace.members += "infra/peers/*"`.
+- [x] [code-rag/dockerfile/Dockerfile](../../code-rag/dockerfile/Dockerfile):
+  - Build stage: COPY caravan/rpc/rust/{caravan-rpc,caravan-rpc-macros} so the B0p path-dep resolves.
+  - Bump base to `rust:1.95-slim` (was 1.92, below caravan-rpc's MSRV).
+  - Dummy-source step adds `infra/peers/_caravan_marker/{Cargo.toml,src/main.rs}` — a no-op sentinel ensuring Cargo's `infra/peers/*` glob has ≥1 match (Cargo errors on zero-match globs).
+  - COPY `code-rag/infra ./infra` after the real-source COPYs so peer crates appear before the final cargo build.
+  - Post-build: collect `caravan-peer-*` binaries into `/caravan-bin/` via a shell loop (no-op-safe when no peers exist).
+  - Chat target: `COPY --from=builder /caravan-bin/. ./` brings peer binaries into the chat image alongside `code-rag-chat`.
+- [x] [code-rag/.gitignore](../../code-rag/.gitignore) — `/infra/` and `/caravan.exe` ignored.
+
+**End-to-end acceptance (verified 2026-05-21):**
+- [x] `caravan compile --target=dev-monolith` writes env-only override (no peer service); `caravan compile --target=dev-split-light` writes the override + `infra/peers/embedder/{Cargo.toml,src/main.rs}`.
+- [x] `docker compose -f docker-compose.yaml -f infra/dev-monolith/generated/docker-compose.override.generated.yaml up -d --build` brings chat up; `curl POST /chat {"query":"how does caravan rpc work"}` returns 11 chunks with intent=`relationship`.
+- [x] `docker compose ... -f infra/dev-split-light/generated/... --profile app up -d --build` brings chat + embedder peer up; same query returns 11 chunks with **byte-identical chunk_ids** in the same order, intent=`relationship`. Same source, yaml flip, different deployment, identical response.
+- [x] **HTTP dispatch verified empirically**: `docker stop code-rag-embedder-1`; chat query panics with `caravan-rpc: dispatch_sync: Transport(Http("error sending request for url (http://embedder:8080/_caravan/rpc/Embedder/embed_one)"))` — proves the macro-generated client adapter is routing to the peer over the wire (not falling back to local FastEmbedImpl).
+- [x] `git diff -- crates/ src/` empty between monolith and split-light runs — zero Rust source edits between target flips. The thesis claim ("yaml flips dispatch without source edits") empirically holds.
+- [x] One wagon = one peer service group: 6 `client::<dyn Embedder>()` call sites in code-rag (handlers, retriever, runner, mcp) all dispatch to the single `embedder` compose service.
+
+**Deferred to post-M2 close-out (M9 / merge):**
+- [ ] WASM rebuild (`trunk build --release --features standalone`).
+- [ ] Lockstep version bump of caravan-rpc + caravan-rpc-macros to 0.1.0 + crates.io publish.
+- [ ] `dev-split-mixed` target with `LlmClient: container` once `RigGeminiImpl` moves out of the chat binary crate into a library (M3+ work — orthogonal to thesis proof).
+
+### M2 Path B refactor (DONE 2026-05-21)
+
+User flagged the M2-execute architecture as repo-hardcoded (`target: chat` literal, `_caravan_marker` sentinel in Dockerfile, workspace.members + `infra/peers/*` glob, peer-binary collection in Dockerfile, COPY `/caravan-bin/.` in chat target). Refactored to mirror Python's pattern: SDK is the peer entry; same binary, role-switched via env var.
+
+- [x] **`caravan_rpc::run_or_serve(user_main)` added** (SDK contract point #4 alongside `#[wagon]` / `provide` / `client`). Reads `CARAVAN_RPC_ROLE`: unset → invokes `user_main` (inert pass-through); `peer-<Interface>` → inventory-discovers the macro-emitted server factory, builds the router, `serve_forever`s.
+- [x] **`HttpServerFactory`** inventory entry — proc-macro emits one per `#[wagon]` trait. `build_router_from_registry` does `try_client::<dyn T>()` for the impl then calls macro-generated `build_<trait>_router(impl)`.
+- [x] **Compose emit rewrite** ([compose.go::buildRustPeerService](../internal/compiler/emit/compose.go)) — Rust peers reuse the consumer entry's image (`target: chat` from `entries.<X>.runtime_target` yaml), no command override, no synthetic crate. `CARAVAN_RPC_ROLE=peer-<Iface>` env var is the entire dispatch trigger.
+- [x] **YAML schema extensions**: `entries.<X>.runtime_target` (Dockerfile stage to reuse for peers) + `entries.<X>.env_file` (inherited by peer services that reuse the entry's image; per-seam `seam.env_file` overrides). Peers run the same binary as the consumer → same env-var startup needs → inheriting is the right default.
+- [x] **rust_peer.go DELETED.** `writeRustPeerCrates` shrunk to a no-op that just clears any stale `infra/peers/` left by the M2-original architecture.
+- [x] **code-rag changes reverted to minimum:**
+  - [code-rag/Cargo.toml](../../code-rag/Cargo.toml) — `workspace.members` back to `["crates/*"]` (no `infra/peers/*` glob).
+  - [code-rag/dockerfile/Dockerfile](../../code-rag/dockerfile/Dockerfile) — sentinel marker, COPY infra, peer-binary collection, COPY `/caravan-bin/.` ALL removed. Only the B0p caravan-rpc COPY survives (orthogonal path-dep prerequisite).
+  - [code-rag/src/main.rs](../../code-rag/src/main.rs) — wrapped the chat-server launch in `caravan_rpc::run_or_serve(|| async move { … }).await`. One structural line added.
+  - [code-rag/caravan.yaml](../../code-rag/caravan.yaml) — added `runtime_target: chat` + `env_file: .env` on the `code-rag-chat` entry.
+- [x] **Acceptance re-verified 2026-05-21:**
+  - `caravan compile --target=dev-split-light` emits compose override only — no synthetic crate files anywhere.
+  - `docker compose build` produces the chat image; `up -d` brings both `code-rag-chat` and `code-rag-embedder-1` from the same image. Embedder peer logs `caravan peer Embedder serving on 0.0.0.0:8080` (proves `run_or_serve` detected the role and detoured).
+  - `curl POST /chat {"query":"how does caravan rpc work"}` returns chunk_ids **byte-identical** to the monolith run + Path A run: `1d5fdac…, 633e1fe…, …, 1f3da8d…` (11 sources, same order, intent=`relationship`).
+  - `docker stop code-rag-embedder-1` → chat panics with `caravan-rpc: dispatch_sync: Transport(Http("error sending request for url (http://embedder:8080/_caravan/rpc/Embedder/embed_one)"))`. HTTP dispatch is real, not local fallback.
+  - `git diff -- crates/ src/` still empty between target flips (the `run_or_serve` wrap is a one-time B0p-style adoption, not a per-target change).
+- [x] All Rust tests green (50 tests: 23 lib + 5 e2e + 4 owned + 4 borrowed + 9 registry + 2 async + 3 run_or_serve). Go tests clean.
+
+**Net result:** caravan emit shrinks substantially (~250 lines of `rust_peer.go` deleted, simpler `buildRustPeerService`), user repo shrinks substantially (Dockerfile back to ~B0p shape, Cargo.toml back to one-glob-member). One new SDK contract point (`run_or_serve`) covers everything the synthetic peer crate used to do.
 
 ### M3 — Promote Python SDK from hand-typed to compiler-emitted (2–3 sessions)
 

@@ -1,50 +1,64 @@
-"""Pre-release placeholder for caravan-rpc.
+"""caravan-rpc — runtime SDK for the Caravan application-definition compiler.
 
-Runtime SDK for the Caravan application-definition compiler.
+A user decorates a seam-interface class with ``@wagon``, registers a concrete
+implementation via ``provide(I, impl)``, and dispatches through ``client(I)``.
+Dispatch mode (inproc / http / lambda) is read from the ``CARAVAN_RPC_PEERS``
+env var at process start; when the env var is unset, ``client(I).method`` is a
+direct call on the registered impl with no overhead.
 
-The functional SDK lands at 0.1.0. This 0.0.1 release reserves the PyPI name
-and provides import-time-compatible no-op stubs so SDK-wrapped code does not
-crash at import.
-
-See https://github.com/paulxiep/caravan for thesis, PoC specs, and roadmap.
+See https://github.com/paulxiep/caravan/blob/main/docs/poc_rpc_sdk.md for the
+wire contract and per-language surface.
 """
 
 from __future__ import annotations
 
-__version__ = "0.0.1"
+import inspect
 
-_PLACEHOLDER_MSG = (
-    "caravan-rpc 0.0.1 is a pre-release placeholder. "
-    "The functional SDK lands at 0.1.0; see https://github.com/paulxiep/caravan."
-)
+from . import _registry
+from ._proxy import RpcRemoteError, RpcTransportError, client
+
+__version__ = "0.1.0"
 
 
 def wagon(cls):
-    """Pre-release decorator placeholder.
+    """Mark a class as a seam interface.
 
-    The real ``@wagon`` decorator captures the class as a seam declaration
-    for the Caravan compiler. In 0.0.1 it is an identity function so
-    SDK-wrapped code imports cleanly.
+    Captures public method signatures on the class for later use by the wire
+    codec (each method's args/return type hints become ``pydantic.TypeAdapter``
+    instances at step 1c). The class itself is returned unchanged for
+    ``isinstance`` purposes; only ``__caravan_wagon__`` and ``__caravan_methods__``
+    metadata is attached.
+
+    Methods beginning with ``_`` are excluded. Only regular functions defined on
+    the class are captured — classmethods, staticmethods, and inherited methods
+    are not part of the seam surface.
     """
+    cls.__caravan_wagon__ = True
+    cls.__caravan_methods__ = {
+        name: inspect.signature(member)
+        for name, member in inspect.getmembers(cls, predicate=inspect.isfunction)
+        if not name.startswith("_")
+    }
     return cls
 
 
-def provide(_interface, _impl):
-    """Pre-release no-op.
+def provide(interface_cls, impl):
+    """Register ``impl`` as the provider for ``interface_cls`` in this process.
 
-    The real ``provide()`` registers ``_impl`` as the provider for
-    ``_interface`` in the SDK's inproc registry. In 0.0.1 it does nothing.
+    Call once at process startup (worker entry, CLI ``main()``) before any
+    ``client(interface_cls).method(...)`` call. The proxy looks up the
+    registered impl on every inproc dispatch.
+
+    Raises ``TypeError`` if ``interface_cls`` is not ``@wagon``-decorated.
     """
+    _registry.register(interface_cls, impl)
 
 
-def client(_interface):
-    """Pre-release stub.
-
-    The real ``client()`` returns a dispatcher proxy for ``_interface``
-    that consults ``CARAVAN_RPC_PEERS`` and routes calls inproc / http / lambda.
-    In 0.0.1 it raises NotImplementedError to signal that the SDK isn't usable yet.
-    """
-    raise NotImplementedError(_PLACEHOLDER_MSG)
-
-
-__all__ = ["wagon", "provide", "client", "__version__"]
+__all__ = [
+    "wagon",
+    "provide",
+    "client",
+    "RpcRemoteError",
+    "RpcTransportError",
+    "__version__",
+]

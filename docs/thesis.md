@@ -43,6 +43,8 @@ The same modular codebase, four lives, zero rewrites:
 
 Every transition is a yaml edit.
 
+The word *modular* in "modular codebase" carries weight: caravan asks user code to express its inter-component dependencies through the `caravan-rpc` SDK rather than concrete cross-imports. A codebase that already follows this shape converts in hours; one that doesn't pays a one-time refactor cost that is independently valuable (the same shape good DI demands). See [`rust_caravan_style.md`](rust_caravan_style.md) for the per-language prescription (Rust first; other languages follow).
+
 ## Stable design principles
 
 These follow directly from the thesis and are unlikely to shift:
@@ -50,7 +52,7 @@ These follow directly from the thesis and are unlikely to shift:
 - **One yaml is the IR.** Projections (docker-compose, Terraform/HCL, GHA) are generated from it; never the reverse.
 - **Cloud-agnostic primitives by name** (`bucket`, not `s3`). Schema doesn't break when non-AWS providers are added.
 - **Auditable IaC artifacts.** Generated HCL is reviewable in CI; no opaque deploy step.
-- **One structural contract: the caravan-rpc SDK at inter-component seams.** Within that single contract, user code is whatever the user wrote — caravan composes the deploy graph (per-target container partitioning + IaC emission) without further restructuring. The earlier framing "user code already containerizable; caravan never asks the user to restructure" is partially superseded: the SDK contract IS one structural ask; everything else holds. See `poc_rpc_sdk.md` §1 for the without-SDK anti-pattern this contract prevents.
+- **One structural contract: the caravan-rpc SDK at inter-component seams.** Within that single contract, user code is whatever the user wrote — caravan composes the deploy graph (per-target container partitioning + IaC emission) without further restructuring. The earlier framing "user code already containerizable; caravan never asks the user to restructure" is partially superseded: the SDK contract IS one structural ask; everything else holds. See `poc_rpc_sdk.md` §1 for the without-SDK anti-pattern this contract prevents, and `rust_caravan_style.md` for the per-language adoption prescription (ten rules + readiness scorecard; Rust first).
 - **Caravan owns build artifacts per target.** User owns the Dockerfile per container. Caravan patches the user's package manifest (`Cargo.toml` / `requirements.txt` / `package.json` / `go.mod`) in the per-target build context with two categories of caravan-managed deps: the RPC SDK (always) and Tier-1 hard-pair provider selection (the `llm` group's Bedrock vs Ollama provider, etc.). User's on-disk manifest is untouched.
 - **One caravan.yaml = one VPC.** Each yaml emits one network boundary (one VPC for cloud, one compose network for local). Multi-VPC apps use multiple yamls; caravan does not coordinate across them.
 - **Abstraction libraries are structural for hard pairs.** Where a cloud service and its local counterpart speak different wire APIs (Bedrock ↔ Ollama, Cognito ↔ local JWT, SES ↔ SMTP), keeping user code the same across deployments requires an abstraction layer with cloud + local impls. The layer can live in a community library, in a caravan-authored library, or in user code — but it must exist. This follows from the thesis (same code, different deployments); it isn't a tradeoff. *Who authors it* per pair is a separate scope call, in Current evaluation below.
