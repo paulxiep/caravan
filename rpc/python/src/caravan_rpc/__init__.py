@@ -17,7 +17,7 @@ import inspect
 from . import _registry
 from ._proxy import RpcRemoteError, RpcTransportError, client
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0"
 
 
 def wagon(cls):

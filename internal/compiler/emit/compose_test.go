@@ -31,7 +31,7 @@ func TestEmitComposeOverride(t *testing.T) {
 		t.Fatalf("compile errors:\n%s", buf.String())
 	}
 
-	got, err := EmitComposeOverride(rp)
+	got, err := EmitComposeOverride(rp, "")
 	if err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestEmitComposeMatchesB0Shape(t *testing.T) {
 	if err != nil || diag.HasErrors() {
 		t.Fatalf("compile error: %v / %v", err, diag.HasErrors())
 	}
-	got, err := EmitComposeOverride(rp)
+	got, err := EmitComposeOverride(rp, "")
 	if err != nil {
 		t.Fatal(err)
 	}

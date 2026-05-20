@@ -1,7 +1,7 @@
 [project]
 name = "caravan-rpc"
-version = "0.1.0.dev0"
-description = "Runtime SDK for the Caravan application-definition compiler. Hand-typed functional release for the B0 bootstrap; lifts to 0.1.0 once Phase 2 closes."
+version = "0.1.0"
+description = "Runtime SDK for the Caravan application-definition compiler."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

@@ -24,9 +24,16 @@ const sharedSecretPlaceholder = "dev-secret-placeholder"
 // docker-compose.yaml — adds CARAVAN_RPC_PEERS to consumer entries and
 // spawns a peer service per container-mode seam.
 //
+// `userRepoName` is the base name of the user's repository (e.g.
+// "code-rag" or "invoice-parse"); the Rust peer-service `build:`
+// directive uses `<userRepoName>/infra/...` as the dockerfile path
+// because the compose build context is the parent of the user repo.
+// When set to "" the prefix is omitted (back-compat for callers that
+// don't need the prefix, e.g. invoice-parse's Python path).
+//
 // The output is yaml encoded via yaml.Node for stable key order
 // (golden-file tests would flake on Go map randomization otherwise).
-func EmitComposeOverride(rp *compiler.ResolvedPlan) ([]byte, error) {
+func EmitComposeOverride(rp *compiler.ResolvedPlan, userRepoName string) ([]byte, error) {
 	if rp == nil || rp.Plan == nil {
 		return nil, fmt.Errorf("nil ResolvedPlan")
 	}
@@ -56,7 +63,7 @@ func EmitComposeOverride(rp *compiler.ResolvedPlan) ([]byte, error) {
 		if seam == nil {
 			return nil, fmt.Errorf("targets.%s.seams references unknown seam %q (should have been caught in Normalize)", target.Name, seamName)
 		}
-		svc, err := buildSeamPeerService(seam)
+		svc, err := buildSeamPeerService(seam, rp, userRepoName)
 		if err != nil {
 			return nil, err
 		}
@@ -85,6 +92,7 @@ type composeService struct {
 type composeBuild struct {
 	Context    string
 	Dockerfile string
+	Target     string // optional; selects a stage in a multi-stage Dockerfile
 }
 
 type composeEnvKV struct {
@@ -118,29 +126,134 @@ func buildConsumerOverride(entryName string, envVars map[string]string) composeS
 }
 
 // buildSeamPeerService emits the new service for a container-mode seam.
-func buildSeamPeerService(seam *compiler.Seam) (composeService, error) {
+//
+// Two shapes depending on language:
+//   - Python: reuse the user's image (build context `..`, user's
+//     Dockerfile) with an overridden `command:` running
+//     `python -m caravan_rpc.serve --interface X --impl Y --port N`.
+//   - Rust: build a fresh image from the caravan-generated synthetic
+//     peer Dockerfile (one per seam, lives in
+//     `infra/<target>/generated/peers/<service>/Dockerfile`). The
+//     synthetic binary is its own entrypoint — no command override.
+//
+// `userRepoName` is the user repo's directory name; the Rust path
+// prefixes it onto the dockerfile reference so docker compose can
+// resolve from the build context (which is the user repo's parent).
+// `rp` is needed by the Rust branch to pick the host entry whose
+// image the peer reuses.
+func buildSeamPeerService(seam *compiler.Seam, rp *compiler.ResolvedPlan, userRepoName string) (composeService, error) {
 	lang := detectLanguage(seam)
-	emitter, ok := SeamServerCommands[lang]
+	switch lang {
+	case LanguagePython:
+		return buildPythonPeerService(seam)
+	case LanguageRust:
+		return buildRustPeerService(seam, rp, userRepoName), nil
+	default:
+		return composeService{}, fmt.Errorf("seam %q: unsupported impl language %q (impl=%q)", seam.Name, lang, seam.Impl)
+	}
+}
+
+// buildPythonPeerService keeps the existing M1 shape: reuse user's
+// image + command override invoking `python -m caravan_rpc.serve`.
+func buildPythonPeerService(seam *compiler.Seam) (composeService, error) {
+	emitter, ok := SeamServerCommands[LanguagePython]
 	if !ok {
-		return composeService{}, fmt.Errorf("seam %q: no SeamServerCommand for language %q (impl=%q)", seam.Name, lang, seam.Impl)
+		return composeService{}, fmt.Errorf("seam %q: no SeamServerCommand for Python (internal bug)", seam.Name)
 	}
 	cmd, err := emitter.Command(seam, seamServerPort)
 	if err != nil {
 		return composeService{}, fmt.Errorf("seam %q: %w", seam.Name, err)
 	}
-	return composeService{
+	svc := composeService{
 		Name: seam.ServiceName,
 		Build: &composeBuild{
 			Context:    "..",
 			Dockerfile: seam.Dockerfile,
 		},
-		EnvFile: []string{"../.env"},
 		Environment: []composeEnvKV{
 			{Key: "CARAVAN_RPC_SHARED_SECRET", Value: sharedSecretPlaceholder},
 		},
 		Command:  cmd,
 		Profiles: []string{"app"},
-	}, nil
+	}
+	if seam.EnvFile != "" {
+		svc.EnvFile = []string{seam.EnvFile}
+	}
+	return svc, nil
+}
+
+// buildRustPeerService points at the caravan-generated synthetic peer
+// Dockerfile. The build context is the parent of the user repo (so the
+// peer crate + caravan-rpc + impl crate are all reachable from one
+// COPY). The Dockerfile path is the caravan-generated one inside
+// `infra/<target>/generated/peers/<service>/Dockerfile` — relative to
+// the build context that's `<repo-name>/infra/<target>/...`.
+func buildRustPeerService(seam *compiler.Seam, rp *compiler.ResolvedPlan, userRepoName string) composeService {
+	// Path B (2026-05-21): the peer service reuses the consumer entry's
+	// image as-is. The chat binary's `main()` is expected to wrap its
+	// app startup in `caravan_rpc::run_or_serve`, which detours into
+	// peer mode based on `CARAVAN_RPC_ROLE=peer-<Interface>`. No CMD
+	// override, no separate binary, no workspace.members surgery.
+	//
+	// Resolve which entry hosts the peer: M2 PoC picks the first
+	// container-mode entry in the target (typical case: single-entry
+	// repos like code-rag). Multi-entry repos can override per-seam
+	// via `seams.<X>.host_entry` post-PoC.
+	hostEntry := pickHostEntry(rp)
+	dockerfilePath := hostEntry.Dockerfile
+	if dockerfilePath == "" {
+		dockerfilePath = "Dockerfile"
+	}
+	build := &composeBuild{
+		Context:    "..",
+		Dockerfile: fmt.Sprintf("./%s/%s", userRepoName, dockerfilePath),
+		Target:     hostEntry.RuntimeTarget,
+	}
+
+	role := "peer-" + seam.Name
+
+	svc := composeService{
+		Name:  seam.ServiceName,
+		Build: build,
+		Environment: []composeEnvKV{
+			{Key: "CARAVAN_RPC_ROLE", Value: role},
+			{Key: "CARAVAN_RPC_SHARED_SECRET", Value: sharedSecretPlaceholder},
+		},
+		// No `command:` — the chat binary's default CMD handles the
+		// role switch via `run_or_serve`.
+		Profiles: []string{"app"},
+	}
+	// env_file resolution: per-seam override wins; otherwise inherit
+	// from the host entry. The peer runs the SAME binary as the
+	// consumer, so its startup env-var needs are the same (AppState
+	// init calls provide() for every impl, each of which may read
+	// env vars). Inheriting the entry's env_file avoids per-seam
+	// declarations for the common case.
+	switch {
+	case seam.EnvFile != "":
+		svc.EnvFile = []string{seam.EnvFile}
+	case hostEntry.EnvFile != "":
+		svc.EnvFile = []string{hostEntry.EnvFile}
+	}
+	return svc
+}
+
+// pickHostEntry returns the entry whose image the Rust peers reuse.
+// M2 PoC: the first (and usually only) container-mode entry in the
+// target. Multi-entry repos can override post-PoC.
+func pickHostEntry(rp *compiler.ResolvedPlan) *compiler.Entry {
+	target := rp.Plan.Targets[rp.TargetName]
+	for _, entryName := range sortedKeys(target.Entries) {
+		if target.Entries[entryName] != compiler.EntryContainer {
+			continue
+		}
+		if entry := rp.Plan.Entries[entryName]; entry != nil {
+			return entry
+		}
+	}
+	// No container entry — return a zero Entry; callers handle empty
+	// Dockerfile/RuntimeTarget by using defaults.
+	return &compiler.Entry{}
 }
 
 // peerHostsFromEnv extracts the host names from a CARAVAN_RPC_PEERS
@@ -259,6 +372,9 @@ func buildNode(b *composeBuild) *yaml.Node {
 	out.Content = []*yaml.Node{
 		scalarNode("context"), scalarNode(b.Context),
 		scalarNode("dockerfile"), scalarNode(b.Dockerfile),
+	}
+	if b.Target != "" {
+		out.Content = append(out.Content, scalarNode("target"), scalarNode(b.Target))
 	}
 	return out
 }

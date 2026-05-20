@@ -39,6 +39,12 @@ seams:
     # Override the default kebab-case naming (`llm-extraction`) so the
     # generated compose service name matches B0's hand-edit byte-for-byte.
     service_name: llm-extractor
+    # The llm-extractor peer needs GEMINI_API_KEY to call out to
+    # Gemini. invoice-parse runs compose from `invoice-parse/`, so
+    # `../.env` from the generated override file resolves to the user's
+    # repo-level .env. Code-rag's Rust peers don't need any envvars
+    # beyond CARAVAN_RPC_SHARED_SECRET, so they omit this field.
+    env_file: ../.env
 
 resources:
   invoice_queue: { type: queue, composition: oss-local }

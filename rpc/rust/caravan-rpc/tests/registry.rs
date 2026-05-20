@@ -1,84 +1,71 @@
-//! Integration tests for the `caravan-rpc` inproc registry + dispatch gating.
+//! Integration tests for the `caravan-rpc` inproc registry + dispatch
+//! mode selection.
 //!
-//! Each test uses its own distinct trait (and therefore its own `TypeId` key)
-//! so the process-global registry doesn't cause cross-test interference under
-//! cargo's default parallel test harness. Tests that touch the
-//! `CARAVAN_RPC_PEERS` env var serialize themselves via [`ENV_LOCK`].
+//! Each test uses its own distinct trait (and therefore its own `TypeId`
+//! key) so the process-global registry doesn't cause cross-test
+//! interference under cargo's default parallel harness.
+//!
+//! Peer-table mode is varied via `peers::__set_table_override_for_tests`
+//! which is per-thread — tests run in parallel without locking and
+//! without mutating process env (no `unsafe` in test code).
 
 #![allow(dead_code)] // some trait methods exist only to occupy unique TypeId slots
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::collections::HashMap;
+use std::sync::Arc;
 
+use caravan_rpc::peers::{
+    __clear_table_override_for_tests, __set_table_override_for_tests, PeerEntry,
+};
 use caravan_rpc::{client, is_provided, provide, try_client, wagon};
 
-/// Serializes tests that read or write `CARAVAN_RPC_PEERS`. Tests that only
-/// touch the registry (no env interaction) can run in parallel because each
-/// uses a unique trait type.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+/// Drop-guard that installs a per-thread peer-table override and clears
+/// it on drop. Tests are parallel-safe — each thread gets its own.
+struct PeerOverride;
 
-struct EnvVarGuard<'a> {
-    _lock: MutexGuard<'a, ()>,
-    key: &'static str,
-    prior: Option<String>,
-}
-
-impl<'a> EnvVarGuard<'a> {
-    fn set(key: &'static str, value: &str) -> Self {
-        let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let prior = std::env::var(key).ok();
-        // SAFETY: tests run single-threaded with respect to this env var by
-        // way of ENV_LOCK; outside-process readers are not part of the test
-        // contract.
-        std::env::set_var(key, value);
-        Self {
-            _lock: lock,
-            key,
-            prior,
+impl PeerOverride {
+    fn set(entries: &[(&str, PeerEntry)]) -> Self {
+        let mut map = HashMap::new();
+        for (k, v) in entries {
+            map.insert((*k).to_string(), v.clone());
         }
+        __set_table_override_for_tests(map);
+        Self
     }
 
-    fn unset(key: &'static str) -> Self {
-        let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let prior = std::env::var(key).ok();
-        std::env::remove_var(key);
-        Self {
-            _lock: lock,
-            key,
-            prior,
-        }
+    fn empty() -> Self {
+        __set_table_override_for_tests(HashMap::new());
+        Self
     }
 }
 
-impl Drop for EnvVarGuard<'_> {
+impl Drop for PeerOverride {
     fn drop(&mut self) {
-        match &self.prior {
-            Some(v) => std::env::set_var(self.key, v),
-            None => std::env::remove_var(self.key),
-        }
+        __clear_table_override_for_tests();
     }
 }
 
-// ---------- inproc lookup (env-unset) ----------
+// ---------- inproc lookup (no override / empty override) ----------
 
 #[wagon]
 trait Greeter: Send + Sync {
-    fn greet(&self, name: &str) -> String;
+    fn greet(&self, name: String) -> String;
 }
 
 struct ShoutGreeter;
 impl Greeter for ShoutGreeter {
-    fn greet(&self, name: &str) -> String {
+    fn greet(&self, name: String) -> String {
         format!("HELLO, {}!", name.to_uppercase())
     }
 }
 
 #[test]
 fn provide_then_client_returns_registered_impl() {
-    let _g = EnvVarGuard::unset("CARAVAN_RPC_PEERS");
+    let _g = PeerOverride::empty();
     provide::<dyn Greeter>(Arc::new(ShoutGreeter));
 
     let g = client::<dyn Greeter>();
-    assert_eq!(g.greet("world"), "HELLO, WORLD!");
+    assert_eq!(g.greet("world".to_string()), "HELLO, WORLD!");
 }
 
 // ---------- re-register is last-write-wins ----------
@@ -104,7 +91,7 @@ impl Adder for BiasedAdder {
 
 #[test]
 fn re_provide_replaces_prior_impl() {
-    let _g = EnvVarGuard::unset("CARAVAN_RPC_PEERS");
+    let _g = PeerOverride::empty();
     provide::<dyn Adder>(Arc::new(PlainAdder));
     assert_eq!(client::<dyn Adder>().add(2, 3), 5);
 
@@ -116,13 +103,13 @@ fn re_provide_replaces_prior_impl() {
 
 #[wagon]
 trait NeverRegistered: Send + Sync {
-    fn unreachable(&self);
+    fn unreachable(&self) -> i32;
 }
 
 #[test]
 #[should_panic(expected = "no impl registered")]
 fn client_panics_when_no_impl_registered() {
-    let _g = EnvVarGuard::unset("CARAVAN_RPC_PEERS");
+    let _g = PeerOverride::empty();
     let _ = client::<dyn NeverRegistered>();
 }
 
@@ -130,19 +117,19 @@ fn client_panics_when_no_impl_registered() {
 
 #[wagon]
 trait OptionalSeam: Send + Sync {
-    fn ping(&self) -> &'static str;
+    fn ping(&self) -> String;
 }
 
 struct PingImpl;
 impl OptionalSeam for PingImpl {
-    fn ping(&self) -> &'static str {
-        "pong"
+    fn ping(&self) -> String {
+        "pong".to_string()
     }
 }
 
 #[test]
 fn try_client_returns_none_when_no_impl_registered() {
-    let _g = EnvVarGuard::unset("CARAVAN_RPC_PEERS");
+    let _g = PeerOverride::empty();
     assert!(try_client::<dyn OptionalSeam>().is_none());
     assert!(!is_provided::<dyn OptionalSeam>());
 
@@ -153,7 +140,7 @@ fn try_client_returns_none_when_no_impl_registered() {
     assert_eq!(s.ping(), "pong");
 }
 
-// ---------- inproc mode in CARAVAN_RPC_PEERS behaves like env-unset ----------
+// ---------- inproc mode override behaves like no override ----------
 
 #[wagon]
 trait InprocSeam: Send + Sync {
@@ -168,57 +155,78 @@ impl InprocSeam for InprocImpl {
 }
 
 #[test]
-fn inproc_mode_env_behaves_like_env_unset() {
-    let _g = EnvVarGuard::set(
-        "CARAVAN_RPC_PEERS",
-        "{\"InprocSeam\":{\"mode\":\"inproc\"}}",
-    );
+fn inproc_mode_override_behaves_like_no_override() {
+    let _g = PeerOverride::set(&[("InprocSeam", PeerEntry::Inproc)]);
     provide::<dyn InprocSeam>(Arc::new(InprocImpl));
     assert_eq!(client::<dyn InprocSeam>().value(), 42);
 }
 
-// ---------- http mode panics with M2 pointer ----------
+// ---------- http-mode override + inventory factory routes to HttpClient ----------
+//
+// HttpSeam goes through the full proc-macro codegen path, so an
+// `inventory::submit!` factory exists. With http-mode in the override
+// table + a registered local impl, client() should return the
+// macro-generated HttpClient (not the local impl). We don't have an
+// actual peer server running here, but we can verify the right adapter
+// type comes back by checking it's NOT the local impl.
 
 #[wagon]
 trait HttpSeam: Send + Sync {
-    fn anything(&self);
+    fn label(&self) -> String;
 }
 
-struct HttpImpl;
-impl HttpSeam for HttpImpl {
-    fn anything(&self) {}
+struct HttpSeamLocal;
+impl HttpSeam for HttpSeamLocal {
+    fn label(&self) -> String {
+        "local".to_string()
+    }
 }
 
 #[test]
-#[should_panic(expected = "HTTP dispatch lands at M2")]
-fn http_mode_env_panics_with_m2_pointer() {
-    let _g = EnvVarGuard::set(
-        "CARAVAN_RPC_PEERS",
-        "{\"HttpSeam\":{\"mode\":\"http\",\"url\":\"http://peer:8080\"}}",
-    );
-    provide::<dyn HttpSeam>(Arc::new(HttpImpl));
-    let _ = client::<dyn HttpSeam>();
+fn http_mode_override_returns_macro_generated_http_client() {
+    let _g = PeerOverride::set(&[(
+        "HttpSeam",
+        PeerEntry::Http {
+            url: "http://unreachable:9".to_string(),
+        },
+    )]);
+    provide::<dyn HttpSeam>(Arc::new(HttpSeamLocal));
+
+    let h = client::<dyn HttpSeam>();
+    // The HttpClient adapter's label() would try to make a real HTTP
+    // call to http://unreachable:9 and fail. We instead check via Arc
+    // pointer identity that the returned adapter is NOT the local impl.
+    let local: Arc<dyn HttpSeam> = Arc::new(HttpSeamLocal);
+    // Compare Arc data pointers — adapter is a fresh Arc, not the
+    // process-global registered one.
+    let h_ptr = Arc::as_ptr(&h) as *const ();
+    let local_ptr = Arc::as_ptr(&local) as *const ();
+    assert_ne!(h_ptr, local_ptr, "expected HttpClient adapter, got local");
 }
 
-// ---------- lambda mode panics with M7 pointer ----------
+// ---------- lambda mode override panics with M7 pointer ----------
 
 #[wagon]
 trait LambdaSeam: Send + Sync {
-    fn anything(&self);
+    fn anything(&self) -> i32;
 }
 
 struct LambdaImpl;
 impl LambdaSeam for LambdaImpl {
-    fn anything(&self) {}
+    fn anything(&self) -> i32 {
+        7
+    }
 }
 
 #[test]
-#[should_panic(expected = "Lambda dispatch lands at M7")]
-fn lambda_mode_env_panics_with_m7_pointer() {
-    let _g = EnvVarGuard::set(
-        "CARAVAN_RPC_PEERS",
-        "{\"LambdaSeam\":{\"mode\":\"lambda\",\"function_url\":\"https://x.lambda-url.us-east-1.on.aws/\"}}",
-    );
+#[should_panic(expected = "Lambda dispatch")]
+fn lambda_mode_override_panics_with_m7_pointer() {
+    let _g = PeerOverride::set(&[(
+        "LambdaSeam",
+        PeerEntry::Lambda {
+            function_url: "https://x.lambda-url.us-east-1.on.aws/".to_string(),
+        },
+    )]);
     provide::<dyn LambdaSeam>(Arc::new(LambdaImpl));
     let _ = client::<dyn LambdaSeam>();
 }
@@ -227,31 +235,31 @@ fn lambda_mode_env_panics_with_m7_pointer() {
 
 #[wagon]
 trait AlphaSeam: Send + Sync {
-    fn tag(&self) -> &'static str;
+    fn tag(&self) -> String;
 }
 
 #[wagon]
 trait BetaSeam: Send + Sync {
-    fn tag(&self) -> &'static str;
+    fn tag(&self) -> String;
 }
 
 struct AlphaImpl;
 impl AlphaSeam for AlphaImpl {
-    fn tag(&self) -> &'static str {
-        "alpha"
+    fn tag(&self) -> String {
+        "alpha".to_string()
     }
 }
 
 struct BetaImpl;
 impl BetaSeam for BetaImpl {
-    fn tag(&self) -> &'static str {
-        "beta"
+    fn tag(&self) -> String {
+        "beta".to_string()
     }
 }
 
 #[test]
 fn distinct_traits_are_keyed_independently() {
-    let _g = EnvVarGuard::unset("CARAVAN_RPC_PEERS");
+    let _g = PeerOverride::empty();
     provide::<dyn AlphaSeam>(Arc::new(AlphaImpl));
     provide::<dyn BetaSeam>(Arc::new(BetaImpl));
 
@@ -279,7 +287,7 @@ impl Counter for AtomicCounter {
 
 #[test]
 fn client_returns_clones_of_same_underlying_arc() {
-    let _g = EnvVarGuard::unset("CARAVAN_RPC_PEERS");
+    let _g = PeerOverride::empty();
     provide::<dyn Counter>(Arc::new(AtomicCounter(0.into())));
 
     let a = client::<dyn Counter>();

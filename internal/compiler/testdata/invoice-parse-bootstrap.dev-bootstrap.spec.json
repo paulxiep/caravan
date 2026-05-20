@@ -32,7 +32,8 @@
           "gemini_key"
         ],
         "impl": "invoice_processing.extraction:GeminiExtractor",
-        "service_name": "llm-extractor"
+        "service_name": "llm-extractor",
+        "env_file": "../.env"
       }
     },
     "resources": {

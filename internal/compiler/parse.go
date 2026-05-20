@@ -122,10 +122,12 @@ func parseEntry(file, name string, k, v *yaml.Node, diag *Diagnostics) *Entry {
 	e := &Entry{Name: name, Span: nodeSpan(file, k)}
 	what := "entries." + name
 	dispatchFields(file, v, diag, what, fieldMap{
-		"path":       func(v *yaml.Node) { e.Path = stringScalar(file, v, diag, what+".path") },
-		"dockerfile": func(v *yaml.Node) { e.Dockerfile = stringScalar(file, v, diag, what+".dockerfile") },
-		"triggers":   func(v *yaml.Node) { e.Triggers = parseTriggers(file, v, diag, what+".triggers") },
-		"uses":       func(v *yaml.Node) { e.Uses = stringList(file, v, diag, what+".uses") },
+		"path":           func(v *yaml.Node) { e.Path = stringScalar(file, v, diag, what+".path") },
+		"dockerfile":     func(v *yaml.Node) { e.Dockerfile = stringScalar(file, v, diag, what+".dockerfile") },
+		"runtime_target": func(v *yaml.Node) { e.RuntimeTarget = stringScalar(file, v, diag, what+".runtime_target") },
+		"env_file":       func(v *yaml.Node) { e.EnvFile = stringScalar(file, v, diag, what+".env_file") },
+		"triggers":       func(v *yaml.Node) { e.Triggers = parseTriggers(file, v, diag, what+".triggers") },
+		"uses":           func(v *yaml.Node) { e.Uses = stringList(file, v, diag, what+".uses") },
 	})
 	return e
 }
@@ -233,6 +235,7 @@ func parseSeam(file, name string, k, v *yaml.Node, diag *Diagnostics) *Seam {
 		"uses":         func(v *yaml.Node) { s.Uses = stringList(file, v, diag, what+".uses") },
 		"impl":         func(v *yaml.Node) { s.Impl = stringScalar(file, v, diag, what+".impl") },
 		"service_name": func(v *yaml.Node) { s.ServiceName = stringScalar(file, v, diag, what+".service_name") },
+		"env_file":     func(v *yaml.Node) { s.EnvFile = stringScalar(file, v, diag, what+".env_file") },
 	})
 	return s
 }

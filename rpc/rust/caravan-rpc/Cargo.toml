@@ -1,10 +1,10 @@
 [package]
 name = "caravan-rpc"
-version = "0.0.1"
-edition = "2021"
-rust-version = "1.75"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
 authors = ["Rachapong Chirarattananon"]
-description = "Runtime SDK for the Caravan application-definition compiler. Pre-release placeholder."
+description = "Runtime SDK for the Caravan application-definition compiler."
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/paulxiep/caravan"
@@ -18,5 +18,51 @@ include = ["src/**/*", "README.md", "LICENSE"]
 name = "caravan_rpc"
 path = "src/lib.rs"
 
+# Feature gates keep WASM consumers (e.g. code-rag-engine compiling to
+# wasm32-unknown-unknown) from pulling in axum / tokio / reqwest. Library
+# consumers that need only the inproc registry + #[wagon] macro can
+# `default-features = false` to opt out of the HTTP plumbing.
+[features]
+default = ["client", "server"]
+# `client` enables the HTTP client dispatch path used by macro-generated
+# client adapters (reqwest blocking + async).
+client = ["dep:reqwest"]
+# `server` enables the axum-based peer HTTP server used by macro-generated
+# server adapters and the compiler-emitted synthetic peer crate.
+server = ["dep:axum", "dep:tokio"]
+
 [dependencies]
-caravan-rpc-macros = { version = "=0.0.1", path = "../caravan-rpc-macros" }
+caravan-rpc-macros = { version = "=0.1.0", path = "../caravan-rpc-macros" }
+
+# Codec + peer-table parsing — always on (no HTTP cost, used by inproc paths
+# for diagnostics and forward-compat peer-table inspection).
+serde = { version = "1.0", features = ["derive"] }
+# preserve_order keeps JSON map field order matching insertion order, which
+# matches Python's `json.dumps` (insertion-ordered dicts). Cross-language
+# wire parity tested at M9.
+serde_json = { version = "1.0", features = ["preserve_order"] }
+thiserror = "1.0"
+
+# Distributed-slice registration: the proc-macro emits `inventory::submit!`
+# for each `#[wagon]` trait so `client::<dyn T>()` can discover the
+# trait's HTTP-adapter constructor at runtime. No user-side touch required.
+inventory = "0.3"
+
+# async-trait runtime support — required by macro-generated async impls
+# (Session 4-async). Re-exported via `__macro_support` so the user crate
+# only declares `caravan-rpc` as a dep, not `async-trait` directly.
+async-trait = "0.1"
+
+# Client-side HTTP (gated by `client` feature). Blocking + async both used —
+# the proc-macro picks per trait method shape at M2 Session 3+.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"], optional = true }
+
+# Server-side HTTP (gated by `server` feature). axum 0.8 matches code-rag's
+# pinned axum so the synthetic peer crate can share a workspace tokio.
+axum = { version = "0.8", optional = true }
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "net", "signal"], optional = true }
+
+[dev-dependencies]
+# Tests use both runtimes — codec / peers / dispatcher unit tests don't need
+# a runtime; integration tests at M2 Session 2+ do.
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros"] }

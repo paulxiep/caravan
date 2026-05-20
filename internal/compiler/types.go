@@ -27,12 +27,31 @@ type Plan struct {
 
 // Entry is a top-level deploy unit — a service the user runs.
 type Entry struct {
-	Name       string    `json:"name"`
-	Path       string    `json:"path"`
-	Dockerfile string    `json:"dockerfile,omitempty"`
-	Triggers   []Trigger `json:"triggers,omitempty"`
-	Uses       []string  `json:"uses,omitempty"`
-	Span       Span      `json:"-"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Dockerfile string `json:"dockerfile,omitempty"`
+	// RuntimeTarget names the multi-stage Dockerfile stage to use as
+	// the runtime image (compose `build.target:`). When the user's
+	// Dockerfile has multiple targets (e.g. code-rag's `chat` /
+	// `raptor`), this disambiguates which one Caravan should reuse —
+	// both for the consumer service itself and for Rust peer services
+	// that share the same image via `caravan_rpc::run_or_serve`.
+	//
+	// Optional; default behavior (empty) lets Docker pick the
+	// Dockerfile's final stage.
+	RuntimeTarget string `json:"runtime_target,omitempty"`
+	// EnvFile is the compose `env_file:` value that gets injected into
+	// the entry's container AND inherited by any Rust peer services
+	// that reuse the entry's image. Same binary → same env-var needs
+	// at startup, so peers pick up whatever the consumer entry uses by
+	// default. Per-seam `seam.env_file` overrides for edge cases.
+	//
+	// Path is taken verbatim and interpreted by compose relative to
+	// the project directory (where `docker compose` was invoked).
+	EnvFile  string    `json:"env_file,omitempty"`
+	Triggers []Trigger `json:"triggers,omitempty"`
+	Uses     []string  `json:"uses,omitempty"`
+	Span     Span      `json:"-"`
 }
 
 // Seam is a same-language synchronous abstraction boundary inside an
@@ -55,7 +74,14 @@ type Seam struct {
 	// name used as the peer service's compose service name. Default:
 	// kebab-case of the seam name (LLMExtraction → llm-extraction).
 	ServiceName string `json:"service_name,omitempty"`
-	Span        Span   `json:"-"`
+	// EnvFile, when set, becomes the peer service's `env_file:`
+	// directive in the emitted compose override. Path is taken
+	// verbatim — interpreted by compose relative to the override
+	// file's directory. invoice-parse's LLMExtraction sets this to
+	// `../.env` so the peer inherits GEMINI_API_KEY; code-rag's
+	// Embedder leaves it unset (no envvar deps).
+	EnvFile string `json:"env_file,omitempty"`
+	Span    Span   `json:"-"`
 }
 
 // Trigger is the shape that drives an entry's lifecycle. PoC supports

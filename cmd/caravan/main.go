@@ -160,7 +160,13 @@ func runCompile(args []string) int {
 	// M4-cloud will add HCL emission for aws targets.
 	wrote := []string{}
 	if rp.Plan.Targets[*target].Runtime == compiler.RuntimeDockerCompose {
-		body, err := emit.EmitComposeOverride(rp)
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		userRepoName := filepath.Base(cwd)
+		body, err := emit.EmitComposeOverride(rp, userRepoName)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -171,6 +177,17 @@ func runCompile(args []string) int {
 			return 1
 		}
 		wrote = append(wrote, path)
+
+		// M2: for each container-mode Rust seam, emit the synthetic
+		// peer crate (Cargo.toml + src/main.rs + Dockerfile). Python
+		// container-mode seams need none — they reuse the user's
+		// image with a command override (handled in compose.go).
+		peerPaths, err := writeRustPeerCrates(rp, *target, outDir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		wrote = append(wrote, peerPaths...)
 	}
 
 	// HCL emission lands at M4-cloud. Until then we still drop a
@@ -202,6 +219,36 @@ func emitJSON(asJSON bool, v any) int {
 		return 1
 	}
 	return 0
+}
+
+// writeRustPeerCrates was the M2-original entry point that emitted a
+// synthetic Rust peer crate per container-mode seam. After the Path B
+// refactor it's a no-op: Rust peers are now hosted by the same chat
+// image as the consumer entry, with the SDK's `caravan_rpc::run_or_serve`
+// detouring into peer mode based on `CARAVAN_RPC_ROLE`. No synthetic
+// crate, no workspace.members edit, no Dockerfile marker. The compose
+// emitter (`buildRustPeerService`) handles the peer-service yaml shape
+// directly.
+//
+// Kept as a stub so callers don't need to be restructured; will be
+// inlined / removed in a follow-up.
+func writeRustPeerCrates(_ *compiler.ResolvedPlan, _, _ string) ([]string, error) {
+	// Path B (2026-05-21): synthetic peer crates removed. The Rust peer
+	// service in the emitted compose override uses the chat image with
+	// `CARAVAN_RPC_ROLE=peer-<Iface>`; the SDK's `run_or_serve` detours
+	// inside the chat binary. No on-disk emission needed.
+	//
+	// Also clear any stale infra/peers/ left over from M2-pre-refactor
+	// runs, so the user repo doesn't carry orphan generated files.
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("getcwd: %w", err)
+	}
+	peersRoot := filepath.Join(cwd, "infra", "peers")
+	if err := os.RemoveAll(peersRoot); err != nil {
+		return nil, fmt.Errorf("clear stale infra/peers/: %w", err)
+	}
+	return nil, nil
 }
 
 // unused stub to silence linters until full subcommand wiring lands.

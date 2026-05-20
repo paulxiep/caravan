@@ -26,11 +26,16 @@ type SeamServerCommand interface {
 // compose-emit looks up the right one by inspecting the seam's `impl:`
 // field shape — see `detectLanguage`.
 //
-// Keyed by a small set of language constants (Python at M1; Rust / TS
-// / Go follow at M2+). A nil entry signals "deferred to a later
-// milestone"; the emitter surfaces that as a clear error.
+// Keyed by a small set of language constants (Python at M1; Rust at
+// M2; TS / Go follow post-PoC). A nil entry signals "deferred to a
+// later milestone"; the emitter surfaces that as a clear error.
 var SeamServerCommands = map[Language]SeamServerCommand{
 	LanguagePython: pythonSeamServer{},
+	// LanguageRust is intentionally absent — Rust peers are built from a
+	// caravan-emitted synthetic crate (see `rust_peer.go`) rather than
+	// using a command override on the user's image. The compose emitter
+	// branches on language explicitly for Rust; SeamServerCommand only
+	// covers command-override languages.
 }
 
 // Language tags a seam's implementation language. Determined from the
@@ -46,22 +51,24 @@ const (
 )
 
 // detectLanguage inspects a seam's `impl:` field and returns the
-// implementation language. The shape conventions:
+// implementation language. Shape conventions:
 //
-//	"module.path:ClassName"   → Python
-//	"binary-name"             → Rust (M2 — same-binary mode-flipped)
+//	"module.path:ClassName"   → Python (has `.` AND a single `:` not part of `::`)
+//	"crate_name::TypeName"    → Rust (has `::` — Rust path separator)
 //
-// Heuristic is intentionally narrow at M1 (only Python ships); the M2
-// expansion adds the Rust branch.
+// The Rust check runs first so that `foo::Bar` doesn't accidentally
+// match Python's `.` + `:` heuristic.
 func detectLanguage(seam *compiler.Seam) Language {
-	switch {
-	case seam == nil || seam.Impl == "":
-		return LanguageUnknown
-	case strings.Contains(seam.Impl, ":") && strings.Contains(seam.Impl, "."):
-		return LanguagePython
-	default:
+	if seam == nil || seam.Impl == "" {
 		return LanguageUnknown
 	}
+	if strings.Contains(seam.Impl, "::") {
+		return LanguageRust
+	}
+	if strings.Contains(seam.Impl, ":") && strings.Contains(seam.Impl, ".") {
+		return LanguagePython
+	}
+	return LanguageUnknown
 }
 
 // --- Python -----------------------------------------------------------------
