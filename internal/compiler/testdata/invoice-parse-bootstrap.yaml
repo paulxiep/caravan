@@ -1,0 +1,67 @@
+# Caravan application descriptor for invoice-parse.
+#
+# This file is the user-authored input to `caravan compile --target=<name>`.
+# It maps the existing invoice-parse code (Python processing service + Rust
+# ingestion/output) onto Caravan's vocabulary: entries (deploy units),
+# seams (synchronous abstraction boundaries inside a single language),
+# resources (data-plane primitives), and per-target dispatch overrides.
+#
+# Status: M0 seed. Only the LLMExtraction seam + the processing entry are
+# fully declared — enough to drive the dev-bootstrap target that matches
+# B0's hand-edited override. Other invoice-parse services (output, ingest,
+# dashboard, model-init) and resources (postgres, redis, blob storage) are
+# stubs / unmentioned and stay hand-authored in infra/docker-compose.yaml
+# until M6 brings them under caravan declaration.
+
+name: invoice-parse
+default_target: dev-bootstrap
+
+entries:
+  processing:
+    path: services/processing
+    dockerfile: services/processing/Dockerfile
+    triggers:
+      - queue: { from: invoice_queue }
+    uses: [invoice_queue, invoice_db, invoice_blobs, gemini_key]
+
+seams:
+  LLMExtraction:
+    # Same code lives in the same module as the processing entry; the
+    # peer service in container-mode reuses the processing image with an
+    # overridden command (B0's pattern, now compiler-emitted at M1).
+    path: services/processing
+    dockerfile: services/processing/Dockerfile
+    uses: [gemini_key]
+    # `impl` tells the M1 compose-emitter which class to load when this
+    # seam dispatches as a container peer. Language-agnostic shape; the
+    # Python emitter parses `module:Class`.
+    impl: invoice_processing.extraction:GeminiExtractor
+    # Override the default kebab-case naming (`llm-extraction`) so the
+    # generated compose service name matches B0's hand-edit byte-for-byte.
+    service_name: llm-extractor
+
+resources:
+  invoice_queue: { type: queue, composition: oss-local }
+  invoice_db:    { type: db.sql, composition: oss-local }
+  invoice_blobs: { type: bucket, composition: oss-local }
+
+secrets:
+  gemini_key: { from: env, path: GEMINI_API_KEY }
+
+targets:
+  # dev-bootstrap matches B0 criterion #5: LLMExtraction dispatches to a
+  # separate compose service (`llm-extractor`) via HTTP. Used to validate
+  # the M1 emit against the hand-edited B0 override.
+  dev-bootstrap:
+    runtime: docker-compose
+    default_composition: oss-local
+    entries: { processing: container }
+    seams:   { LLMExtraction: container }
+
+  # dev-inproc keeps everything in-process. Same source code; flip a yaml
+  # line and the inproc/http dispatch toggles. This is the thesis.
+  dev-inproc:
+    runtime: docker-compose
+    default_composition: oss-local
+    entries: { processing: container }
+    # seams omitted → LLMExtraction defaults to inproc

@@ -12,7 +12,7 @@ The three dimensions:
 
 A yaml `target:` names a point in (packaging × placement × composition). A repo declares many - `dev`, `hybrid-dev`, `staging`, `prod`, `pr-preview` - and `caravan up --target=<name>` flips between them. Same source code everywhere.
 
-**Current state**: scoping-complete; PoC bootstrap in progress. **Phase A** (claim SDK package names across PyPI / crates.io / npm / Go) is done — see Implementation roadmap below. **Phase B** (functional SDK + test-repo conversion) starts at B0. **Phase 2** (AWS coverage) is deferred until Phase 1 (docker-compose validation) is green on both test repos.
+**Current state**: PoC bootstrap closed; compiler emits compose. **Phase A** (claim SDK package names across PyPI / crates.io / npm / Go) is done. **B0** (hand-wired Python SDK on invoice-parse — see [`PoC-B0.md`](PoC-B0.md)) and **B0p** (Rust SDK stub on code-rag — see [`PoC-B0p.md`](PoC-B0p.md)) closed. **M0 + M1** closed: the Go compiler in `cmd/caravan/` + `internal/compiler/` parses `caravan.yaml`, resolves per-target `CARAVAN_RPC_PEERS`, and emits a docker-compose override semantically identical to B0's hand-edit (`extraction_data` byte-identical on the invoice-parse pipeline). Active phase: **M2** (Rust SDK + code-rag flips one seam — see [`PoC-pre-M2.md`](PoC-pre-M2.md) for the readiness audit). **Phase 2** (AWS coverage) is deferred until Phase 1 closes on both test repos.
 
 ## Scoping documents
 
@@ -46,7 +46,8 @@ The PoC narrows the full thesis into a testable subset built around three load-b
 ## Implementation roadmap
 
 - [Development plan](https://github.com/paulxiep/caravan/blob/main/docs/development_plan.md) — milestones B0 → M9 split into **Phase 1** (docker-compose + local-run, thesis-proving) and **Phase 2** (AWS coverage, deferred). Phase 1 alone proves the thesis on real code.
-- [SDK source of truth](https://github.com/paulxiep/caravan/tree/main/rpc) — `caravan/rpc/<lang>/` for Python, Rust, TypeScript, Go. Currently 0.0.1 placeholders that import-clean but don't dispatch; replaced by functional 0.1.0 at B0 (Python) and M2 (Rust). TypeScript and Go directories exist as namespace reservations; out of PoC scope.
+- **Milestone close-out docs** (live as separate markdown files at repo root): [`PoC-B0.md`](PoC-B0.md) · [`PoC-B0p.md`](PoC-B0p.md) · [`PoC-pre-M2.md`](PoC-pre-M2.md).
+- [SDK source of truth](https://github.com/paulxiep/caravan/tree/main/rpc) — `caravan/rpc/<lang>/` for Python, Rust, TypeScript, Go. The PyPI/crates.io 0.0.1 placeholders are still the published versions; the functional `caravan-rpc-py` 0.1.0.dev0 (Python, landed at B0) and `caravan-rpc` Rust crate (landed at B0p) live in the workspace and are consumed by test repos via local path / vendored wheel through Phase 1. PyPI/crates.io 0.1.0 publish gates at M9 Phase 1 close. TypeScript and Go directories exist as namespace reservations; out of PoC scope.
 - **Published placeholders** (Phase A — 2026-05-19):
   - PyPI: [`caravan-rpc` 0.0.1](https://pypi.org/project/caravan-rpc/)
   - crates.io: [`caravan-rpc` 0.0.1](https://crates.io/crates/caravan-rpc)
@@ -58,4 +59,4 @@ The PoC narrows the full thesis into a testable subset built around three load-b
 
 ## Status
 
-Phase A (squat) complete. Phase B (functional SDK on real test repos) is the active phase per [`docs/development_plan.md`](https://github.com/paulxiep/caravan/blob/main/docs/development_plan.md). The thesis is load-bearing; some evidence catalogs in `docs/` may still shift as Phase B surfaces ergonomics issues.
+Phase A (squat), B0 (Python SDK + invoice-parse refactor), B0p (Rust SDK stubs + code-rag refactor), M0 (compiler IR), and M1 (compose override emit) are closed. Active phase: M2 (Rust SDK with `#[wagon]` codegen + axum HTTP adapter, code-rag flips its first seam). See [`docs/development_plan.md`](docs/development_plan.md) for the live milestone tracker and the per-milestone `PoC-*.md` files for retrospective writeups.

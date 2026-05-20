@@ -1,0 +1,97 @@
+{
+  "plan": {
+    "name": "invoice-parse",
+    "default_target": "dev-bootstrap",
+    "entries": {
+      "processing": {
+        "name": "processing",
+        "path": "services/processing",
+        "dockerfile": "services/processing/Dockerfile",
+        "triggers": [
+          {
+            "kind": "queue",
+            "queue": {
+              "from": "invoice_queue"
+            }
+          }
+        ],
+        "uses": [
+          "invoice_queue",
+          "invoice_db",
+          "invoice_blobs",
+          "gemini_key"
+        ]
+      }
+    },
+    "seams": {
+      "LLMExtraction": {
+        "name": "LLMExtraction",
+        "path": "services/processing",
+        "dockerfile": "services/processing/Dockerfile",
+        "uses": [
+          "gemini_key"
+        ],
+        "impl": "invoice_processing.extraction:GeminiExtractor",
+        "service_name": "llm-extractor"
+      }
+    },
+    "resources": {
+      "invoice_blobs": {
+        "name": "invoice_blobs",
+        "type": "bucket",
+        "composition": "oss-local"
+      },
+      "invoice_db": {
+        "name": "invoice_db",
+        "type": "db.sql",
+        "composition": "oss-local"
+      },
+      "invoice_queue": {
+        "name": "invoice_queue",
+        "type": "queue",
+        "composition": "oss-local"
+      }
+    },
+    "secrets": {
+      "gemini_key": {
+        "name": "gemini_key",
+        "from": "env",
+        "path": "GEMINI_API_KEY"
+      }
+    },
+    "targets": {
+      "dev-bootstrap": {
+        "name": "dev-bootstrap",
+        "runtime": "docker-compose",
+        "default_composition": "oss-local",
+        "entries": {
+          "processing": "container"
+        },
+        "seams": {
+          "LLMExtraction": "container"
+        }
+      },
+      "dev-inproc": {
+        "name": "dev-inproc",
+        "runtime": "docker-compose",
+        "default_composition": "oss-local",
+        "entries": {
+          "processing": "container"
+        }
+      }
+    }
+  },
+  "target": "dev-inproc",
+  "env_vars": {
+    "processing": {
+      "CARAVAN_RPC_PEERS": "{\"LLMExtraction\":{\"mode\":\"inproc\"}}"
+    }
+  },
+  "peer_tables": {
+    "processing": {
+      "LLMExtraction": {
+        "mode": "inproc"
+      }
+    }
+  }
+}

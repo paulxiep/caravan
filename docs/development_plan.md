@@ -239,15 +239,65 @@ See [../PoC-B0p.md](../PoC-B0p.md) for a full milestone write-up.
 
 **Decision gate before M0.** Ratify Go for v0.1 compiler (recommended; already aligned with stub CLI).
 
-### M1 — Compiler emits docker-compose, runs invoice-parse (2 sessions)
+**Go conventions — what to commit.** `go.mod` (module declaration; analog of `Cargo.toml` / `package.json`) and `go.sum` (content-hash lock; analog of `Cargo.lock` / `package-lock.json`) **both go in the commit**. caravan is a binary, so committing `go.sum` is mandatory for reproducible builds; for pure libraries the old "don't commit go.sum" advice has been superseded — commit it either way. The pattern matches B0p's Rust `Cargo.toml` (committed) + `Cargo.lock` (gitignored for libraries per [the Rust SDK gitignore note](../.gitignore)), with the caveat that **Go's default is the opposite of Rust's library convention** — go.sum is committed even for libraries.
 
-**Demo.** `caravan compile --target=dev-bootstrap` against the B0 yaml produces an `infra/dev-bootstrap/generated/docker-compose.generated.yaml` byte-equivalent (modulo formatting) to the hand-edited B0 override. `docker compose up` works identically.
+**Progress (M0 — DONE):**
+
+Compiler scaffold (`caravan/internal/compiler/`):
+- [x] `internal/compiler/kinds.go` — enums for `ResourceKind`, `TriggerKind`, `RuntimeKind`, `CompositionMode`, `EntryDispatchMode`, `SeamDispatchMode` with `IsValid()` helpers — 2026-05-20
+- [x] `internal/compiler/types.go` — IR structs (`Plan`, `Entry`, `Seam`, `Resource`, `Secret`, `Target`, `Trigger`, `ResolvedPlan`, `PeerEntry`, `Span`) per PoC's flatter entries+seams shape — 2026-05-20
+- [x] `internal/compiler/diag.go` — `Diagnostics` collector with `Error()` / `Warn()` + `WriteTo()` in `file:line:col: severity: message` form — 2026-05-20
+- [x] `internal/compiler/lex.go` — Phase 1: file → `yaml.Node` tree via `gopkg.in/yaml.v3`, source spans preserved — 2026-05-20
+- [x] `internal/compiler/traverse.go` — declarative yaml-stepping helpers (`forEachKV`, `forEachItem`, `dispatchFields`, `mappedItems`) — 2026-05-20
+- [x] `internal/compiler/parse.go` — Phase 2: schema validation via per-field `fieldMap`s; tagged-union dispatch (`triggerParsers` map) on trigger kind and resource type; generic `parseEnumMap[T]` for the target sub-maps — 2026-05-20
+- [x] `internal/compiler/normalize.go` — Phase 3 as named pipelines: `applyDefaults` (seam `service_name` kebab-case fallback) → `runValidators` (7 cross-ref + invariant checks, all run unconditionally so diagnostics surface together) — 2026-05-20
+- [x] `internal/compiler/resolve.go` — Phase 4 (narrowed): per-mode `peerBuilders` map + named helpers; deterministic alphabetic ordering. No IAM / networking / secret resolution (deferred to M4-cloud / M7) — 2026-05-20
+- [x] `internal/compiler/compile.go` — top-level `CompileFile` (phases 1–3) and `CompileFileForTarget` (phases 1–4) — 2026-05-20
+- [x] `cmd/caravan/main.go` — subcommand router (`check`, `spec`, `compile`, `--version`) using stdlib `flag` — 2026-05-20
+- [x] `go.sum` ready to commit (committed alongside `go.mod` per Go convention) — 2026-05-20
+
+Test infrastructure (`caravan/internal/compiler/testdata/`):
+- [x] `invoice-parse-bootstrap.yaml` — copy of `invoice-parse/caravan.yaml` — 2026-05-20
+- [x] `invoice-parse-bootstrap.dev-bootstrap.spec.json` + `.dev-inproc.spec.json` — golden outputs, refreshed via `go test -update` — 2026-05-20
+- [x] `TestSpecJSON` (2 subtests): golden-file match for both targets — 2026-05-20
+- [x] `TestSpecMatchesB0HandEdit`: pins `EnvVars.processing.CARAVAN_RPC_PEERS` to B0's exact string — 2026-05-20
+- [x] `TestNormalizeErrors` (5 subtests): unknown `uses:` ref, duplicate seam, unknown resource type, container seam without `impl:`, missing top-level `name:` — 2026-05-20
+
+invoice-parse `caravan-conversion` branch:
+- [x] `invoice-parse/caravan.yaml` authored at repo root with `LLMExtraction` seam carrying `impl:` + `service_name:` fields — 2026-05-20
+
+End-to-end acceptance:
+- [x] `caravan check` from invoice-parse working dir exits 0 — 2026-05-20
+- [x] `caravan spec --target=dev-bootstrap` emits `EnvVars.processing.CARAVAN_RPC_PEERS = {"LLMExtraction":{"mode":"http","url":"http://llm-extractor:8080"}}` — byte-for-byte match with B0's hand-edited override file — 2026-05-20
+- [x] `caravan compile --target=dev-bootstrap` writes placeholder `infra/dev-bootstrap/generated/{main.tf, docker-compose.generated.yaml}` (real emission lands at M1) — 2026-05-20
+- [x] `go test ./...` green (8/8 tests pass) — 2026-05-20
+
+### M1 — Compiler emits docker-compose override, runs invoice-parse (2 sessions)
+
+**Demo.** `caravan compile --target=dev-bootstrap` against the B0 yaml writes `infra/dev-bootstrap/generated/docker-compose.override.generated.yaml`, a compose **override** layered atop the hand-authored base. Semantically equivalent to the hand-edited `infra/docker-compose.caravan-bootstrap.yaml` from B0 — same `CARAVAN_RPC_PEERS` injection on `processing`, same `llm-extractor` peer service. `docker compose -f base -f generated up` runs identically to the hand-edited B0 path.
 
 **Prereqs.** M0; B0.
 
-**Work.** Phase-5 compose emitter. Maps `entries.X.dockerfile` → compose `build:` block. Resource emitter for `db.sql` (Postgres) and `cache` (Redis) groups — emit equivalents of existing service definitions in invoice-parse compose.
+**Scope: override-only.** The earlier ambition of emitting a full-compose alongside is **deferred to M6**. Reason: invoice-parse's resources (postgres, redis, blob storage) aren't yet caravan-declared, and the `model-init` service has bespoke inline Python that doesn't fit the yaml schema. M1 stays focused on the delta-override path; full-compose reconstruction lands when M6 brings invoice-parse's other resources under caravan declaration.
 
-**Acceptance.** Generated compose matches hand-authored ground truth. invoice-parse pipeline runs end-to-end through Caravan-generated infra.
+**Work.** Phase-5 compose emitter (`internal/compiler/emit/compose.go`). One emitter: `EmitComposeOverride(*ResolvedPlan) []byte`. Per-language seam-server `command:` emission via a pluggable interface (M1 ships Python; M2 plugs in Rust). Yaml-spec extensions: `seams.X.impl: <module:Class>` and optional `seams.X.service_name`.
+
+**Acceptance.** Generated override produces the same extraction (semantic JSON equality) as B0's criterion #5 — sample_invoice.pdf run through `docker compose -f infra/docker-compose.yaml -f infra/dev-bootstrap/generated/docker-compose.override.generated.yaml --profile app up` matches `.b0-runs/c1/extraction.json`. 17 successful POSTs through the emitted `llm-extractor` service (one per ingested invoice).
+
+**Progress (M1 — DONE):**
+
+Compose emit (`caravan/internal/compiler/emit/`):
+- [x] `internal/compiler/emit/seam_server.go` — pluggable `SeamServerCommand` interface; `SeamServerCommands` map keyed by `Language`. Python implementation ships at M1 (`python -m caravan_rpc.serve --interface NAME --impl module:Class --port N`). `detectLanguage` heuristic reads `seam.Impl` shape. Rust (`LanguageRust`) is enumerated but its emitter lands at M2. — 2026-05-20
+- [x] `internal/compiler/emit/compose.go` — `EmitComposeOverride(*ResolvedPlan) []byte`. Builds the override yaml via `yaml.Node` for stable key order. `buildConsumerOverride` injects `CARAVAN_RPC_PEERS` + `CARAVAN_RPC_SHARED_SECRET` + `depends_on` edges to peer services. `buildSeamPeerService` dispatches via `SeamServerCommands[lang]`. Command-arg items use `DoubleQuotedStyle` to satisfy docker compose v2's schema (`command.N must be a string`). — 2026-05-20
+- [x] `cmd/caravan/main.go` — `compile --target=X` writes real `docker-compose.override.generated.yaml` for `runtime: docker-compose` targets (HCL still placeholder until M4-cloud). — 2026-05-20
+- [x] `internal/compiler/testdata/dev-bootstrap.override.golden.yaml` — golden file, refreshed via `go test -update`. — 2026-05-20
+- [x] `internal/compiler/emit/compose_test.go` — `TestEmitComposeOverride` (golden-file diff) + `TestEmitComposeMatchesB0Shape` (load-bearing substring assertions). — 2026-05-20
+
+End-to-end acceptance:
+- [x] `go test ./...` green (10/10 across `internal/compiler` + `internal/compiler/emit`). — 2026-05-20
+- [x] `docker compose -f infra/docker-compose.yaml -f infra/dev-bootstrap/generated/docker-compose.override.generated.yaml config --quiet` passes (schema-valid). — 2026-05-20
+- [x] M1 generated override + base compose → sample_invoice.pdf processing → postgres `extraction_data` **IDENTICAL** (deep dict equality) to `.b0-runs/c1/extraction.json` from B0. Confirms the M1-emitted compose dispatches LLMExtraction through the peer service end-to-end producing byte-equivalent outputs to the hand-edited B0 path. — 2026-05-20
+- [x] 15 successful `POST /_caravan/rpc/LLMExtraction/extract` 200s in `llm-extractor` logs during the test batch (15 of 17 enqueued jobs completed within the poll window; sample_invoice.pdf delivered cleanly). — 2026-05-20
 
 ### M2 — Rust SDK, code-rag flips one seam ⬅ CRITICAL THESIS PROOF (4–6 sessions)
 

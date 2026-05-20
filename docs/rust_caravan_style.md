@@ -252,6 +252,8 @@ trait LlmClient {
 
 The chat-side / engine-side may still `#[from]`-convert `LlmError` into a broader `EngineError` for handler use. Just don't put `anyhow::Error` *in the seam signature*.
 
+**When an upstream error type doesn't derive Serde** (e.g. `anyhow::Error`, `lancedb::Error`, `arrow_schema::ArrowError`): replace the `#[from] UpstreamError` variant payload with `String` and write an explicit `From` impl that logs the full chain via `tracing::warn!(error = format!("{e:#}"), ...)` and captures `e.to_string()` in the variant. This follows the reqwest / AWS-SDK / gRPC `Status` convention — full diagnostic on the producing side, top-level message on the wire. The `?`-operator continues to work at call sites because the explicit `From` impl preserves the conversion.
+
 **Why.** Seam errors cross the wire in HTTP/Lambda modes. `anyhow::Error` is type-erased — can't be matched on, can't be reliably serialized. Domain-specific error enums survive transit, let callers branch on `match`, and stay greppable. This matches the conventional Rust split: **`thiserror` for library errors, `anyhow` for application top-level**; seams are library boundaries, so they fall on the `thiserror` side.
 
 ---
