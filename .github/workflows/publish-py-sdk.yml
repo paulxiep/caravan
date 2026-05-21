@@ -5,20 +5,32 @@ name: Publish Python SDK to PyPI
 # token in repo secrets — auth is via the PyPI publisher config tied to
 # this workflow filename + repo + environment.
 #
-# Setup (one-time):
-# 1. Create the GitHub environment `pypi` at:
+# Setup (one-time per registry — TestPyPI AND PyPI are independent):
+# 1. Create BOTH GitHub environments at:
 #      https://github.com/paulxiep/caravan/settings/environments
-#    Optional: add a required reviewer + restrict to `main` branch.
-# 2. Configure the Trusted Publisher on PyPI:
-#      https://pypi.org/manage/account/publishing/
-#    For a new project, use "Add a new pending publisher" with:
+#    - `testpypi` (used by the TestPyPI publish job below)
+#    - `pypi` (used by the PyPI publish job below)
+#    Optional: add a required reviewer + restrict to `main` branch on each.
+# 2a. Configure the Trusted Publisher on TestPyPI for shake-out runs:
+#      https://test.pypi.org/manage/account/publishing/
+#    "Add a new pending publisher" with:
 #      Project name = caravan-rpc
 #      Owner        = paulxiep
 #      Repository   = caravan
 #      Workflow     = publish-py-sdk.yml
-#      Environment  = pypi
-# 3. After the first successful publish, the project exists on PyPI;
-#    the pending publisher becomes a regular Trusted Publisher.
+#      Environment  = testpypi
+# 2b. Same setup on production PyPI:
+#      https://pypi.org/manage/account/publishing/
+#    Same fields except Environment = pypi.
+# 3. After each registry's first successful publish, the project exists
+#    there and the pending publisher becomes a regular Trusted Publisher
+#    (visible at https://<registry>/manage/project/caravan-rpc/settings/publishing/).
+#
+# The OIDC claims the workflow presents (visible in error output if a
+# claim mismatch happens) must match the publisher entry exactly:
+#   sub          = repo:paulxiep/caravan:environment:<env>
+#   workflow_ref = paulxiep/caravan/.github/workflows/publish-py-sdk.yml@refs/heads/main
+#   environment  = <env>   (testpypi or pypi, depending on target input)
 #
 # Usage: bump the version in rpc/python/pyproject.toml, commit, then
 # trigger this workflow via the Actions tab → "Run workflow".

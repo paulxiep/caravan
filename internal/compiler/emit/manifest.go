@@ -10,13 +10,13 @@ import (
 )
 
 // caravanRpcSpec is the version spec Caravan injects into user
-// manifests. We use `>=0.1.0.dev0` (not `>=0.1.0`) because the in-tree
-// vendored wheel that invoice-parse installs from is
-// `caravan_rpc-0.1.0.dev0-py3-none-any.whl` — per PEP 440 a `dev0`
-// release sorts strictly *below* the corresponding release version, so
-// `>=0.1.0` would reject the vendored wheel. The dev0 spec accepts both
-// the current dev wheel and the future M9 PyPI 0.1.0 release.
-const caravanRpcSpec = "caravan-rpc>=0.1.0.dev0"
+// manifests. Pinned at `>=0.1.0` now that the published wheel lives on
+// PyPI (M9 Phase 1 close, 2026-05-21). The earlier `>=0.1.0.dev0`
+// spec was a transition affordance for the vendored
+// `caravan_rpc-0.1.0.dev0-py3-none-any.whl` shipped via `--find-links`
+// before publish; PyPI-resolved installs no longer need the dev0
+// lower bound.
+const caravanRpcSpec = "caravan-rpc>=0.1.0"
 
 // caravanRpcDistribution is the PEP-503 normalized distribution name
 // we recognize in user manifests (case-insensitive; `_` and `-` are

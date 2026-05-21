@@ -87,17 +87,36 @@ jobs:
 
       - name: Wait for caravan-rpc-macros to be indexed (REAL only)
         if: '!inputs.dry_run'
-        run: sleep 60
+        # crates.io indexing time is variable — usually under a minute,
+        # occasionally several. Poll the sparse index for caravan-rpc-macros
+        # 0.1.0 instead of a fixed sleep so the dependent caravan-rpc
+        # publish below doesn't fire before the dep is resolvable. Caps
+        # at 5 minutes to avoid an infinite wait on a real outage.
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsSL https://index.crates.io/ca/ra/caravan-rpc-macros 2>/dev/null | grep -q '"vers":"0.1.0"'; then
+              echo "caravan-rpc-macros 0.1.0 visible in sparse index after $((i*5))s"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Timed out after 5 min waiting for caravan-rpc-macros 0.1.0 to appear" >&2
+          exit 1
 
-      - name: Publish caravan-rpc (dry-run)
+      - name: Verify caravan-rpc package shape (dry-run mode)
         if: inputs.dry_run
         working-directory: rpc/rust/caravan-rpc
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        # --allow-dirty because the dry-run path can't resolve the
-        # not-yet-published macros crate from crates.io. The real publish
-        # below resolves correctly once the macros crate is indexed.
-        run: cargo publish --dry-run --allow-dirty
+        # caravan-rpc can't be `cargo publish --dry-run`-ed before
+        # caravan-rpc-macros is on crates.io: cargo strips the path-dep
+        # in the packaged Cargo.toml and resolves the version against
+        # crates.io. Same trap applies to `cargo package` by default —
+        # it verifies the tarball by building it, which re-triggers the
+        # crates.io lookup. `--no-verify` skips that build step so we
+        # still get manifest validation + the file list (the actual
+        # signal a dry-run gives: what would ship). Real publish runs
+        # only after macros is live (next step) — at which point both
+        # `cargo publish` calls resolve correctly in order.
+        run: cargo package --allow-dirty --list && cargo package --allow-dirty --no-verify
 
       - name: Publish caravan-rpc (REAL — irreversible after 72h)
         if: '!inputs.dry_run'
