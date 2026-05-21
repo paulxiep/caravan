@@ -1,0 +1,64 @@
+# M3 test fixture — two Python seams declared, mix-and-match per target.
+#
+# Mirrors the invoice-parse caravan.yaml after M3 wraps OCRText alongside
+# LLMExtraction. Used to verify that the compose-emit loop produces two
+# peer services when both seams are set to container in a target.
+#
+# Resources declared so the resolved-plan shape matches what the real
+# invoice-parse compile produces; M4's emit picks them up alongside the
+# M3 seams.
+
+name: invoice-parse
+default_target: dev-bootstrap-twoseams
+
+entries:
+  processing:
+    path: services/processing
+    dockerfile: services/processing/Dockerfile
+    triggers:
+      - queue: { from: invoice_queue }
+    uses: [invoice_queue, invoice_db, invoice_blobs, gemini_key]
+
+seams:
+  LLMExtraction:
+    path: services/processing
+    dockerfile: services/processing/Dockerfile
+    uses: [gemini_key]
+    impl: invoice_processing.extraction:GeminiExtractor
+    service_name: llm-extractor
+    env_file: ../.env
+
+  OCRText:
+    path: services/processing
+    dockerfile: services/processing/Dockerfile
+    uses: []
+    impl: invoice_processing.ocr:PaddleOCRTextImpl
+    service_name: ocr-text
+
+resources:
+  invoice_queue: { type: queue, composition: oss-local }
+  invoice_db:    { type: db.sql, composition: oss-local }
+  invoice_blobs: { type: bucket, composition: oss-local }
+
+secrets:
+  gemini_key: { from: env, path: GEMINI_API_KEY }
+
+targets:
+  # Both seams as containers — exercise the multi-seam emit path.
+  dev-bootstrap-twoseams:
+    runtime: docker-compose
+    default_composition: oss-local
+    entries: { processing: container }
+    seams:
+      LLMExtraction: container
+      OCRText: container
+
+  # Mix-and-match: LLM container, OCRText inproc — proves per-seam
+  # dispatch flips independently.
+  dev-split-llm:
+    runtime: docker-compose
+    default_composition: oss-local
+    entries: { processing: container }
+    seams:
+      LLMExtraction: container
+      OCRText: inproc

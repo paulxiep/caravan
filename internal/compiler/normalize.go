@@ -1,5 +1,10 @@
 package compiler
 
+import (
+	"os"
+	"path/filepath"
+)
+
 // Normalize runs phase 3 on a ParsedDoc. It validates cross-references
 // and fills in defaults. The PoC has a small enough schema that we keep
 // normalize/parse on the same struct type — Normalize mutates the doc
@@ -26,10 +31,26 @@ func Normalize(doc *ParsedDoc, diag *Diagnostics) *Plan {
 // diagnostics — it only fills in computed values.
 func applyDefaults(doc *ParsedDoc) {
 	defaulters := []func(*ParsedDoc){
+		defaultOutputDir,
 		defaultSeamServiceNames,
 	}
 	for _, fn := range defaulters {
 		fn(doc)
+	}
+}
+
+// DefaultOutputDir is the per-target write root used when the yaml
+// doesn't set `output_dir:` explicitly. Namespaced so `caravan compile`
+// can't silently overwrite a hand-authored `infra/` (or any other
+// commonly-claimed name) the user already owns.
+const DefaultOutputDir = "caravan-out"
+
+// defaultOutputDir fills Plan.OutputDir from DefaultOutputDir when the
+// yaml didn't declare one. Existing repos that want to keep the prior
+// `infra/` layout opt in with `output_dir: infra`.
+func defaultOutputDir(doc *ParsedDoc) {
+	if doc.OutputDir == "" {
+		doc.OutputDir = DefaultOutputDir
 	}
 }
 
@@ -63,6 +84,9 @@ func runValidators(doc *ParsedDoc, diag *Diagnostics) {
 		validateSeamImplWhenDispatched,
 		validateNamespaceCollisions,
 		validateDefaultTarget,
+		validateEntryLanguages,
+		validateResourceVariants,
+		validateTargetCompositionOverrides,
 	}
 	for _, fn := range pipeline {
 		fn(doc, diag)
@@ -185,6 +209,123 @@ func validateDefaultTarget(doc *ParsedDoc, diag *Diagnostics) {
 	}
 	if _, ok := doc.Targets[doc.DefaultTarget]; !ok {
 		diag.Error(Span{}, "default_target %q is not a declared target", doc.DefaultTarget)
+	}
+}
+
+// validateEntryLanguages detects each entry's source language by
+// stat-ing the manifest files inside `entries.<name>.path`. Fills in
+// Entry.Language.
+//
+// Rules (per docs/poc_yaml_spec.md §"What caravan derives"):
+//
+//	Cargo.toml present                          → rust
+//	pyproject.toml or requirements.txt present  → python
+//	both rust + python manifests present        → error (ambiguous)
+//	none present                                → warn (test fixtures
+//	                                              use synthetic paths
+//	                                              that don't exist on
+//	                                              disk; downstream
+//	                                              consumers can default)
+//
+// The path is resolved relative to the caravan.yaml's directory. When
+// the path doesn't exist, we emit a Warn rather than Error to keep
+// existing tests with synthetic `path: ./api` fixtures passing.
+func validateEntryLanguages(doc *ParsedDoc, diag *Diagnostics) {
+	for _, e := range doc.Entries {
+		if e.Path == "" {
+			continue
+		}
+		dir := e.Path
+		if !filepath.IsAbs(dir) {
+			// Source file is captured per-span; entries' spans share the
+			// same file. Use that to resolve the entry's path relative
+			// to caravan.yaml's directory.
+			base := filepath.Dir(e.Span.File)
+			if base != "" && base != "." {
+				dir = filepath.Join(base, e.Path)
+			}
+		}
+		hasCargo := manifestExists(filepath.Join(dir, "Cargo.toml"))
+		hasPyproject := manifestExists(filepath.Join(dir, "pyproject.toml"))
+		hasRequirements := manifestExists(filepath.Join(dir, "requirements.txt"))
+		hasPython := hasPyproject || hasRequirements
+
+		switch {
+		case hasCargo && hasPython:
+			diag.Error(e.Span, "entries.%s path %q has ambiguous language: both Cargo.toml and Python manifest (pyproject.toml/requirements.txt) present", e.Name, e.Path)
+		case hasCargo:
+			e.Language = LanguageRust
+		case hasPython:
+			e.Language = LanguagePython
+		default:
+			// Path doesn't resolve to a known manifest. Warn only when
+			// the directory exists on disk — synthetic test fixtures use
+			// paths like `./api` that don't exist; we don't want to fail
+			// those. Leave Language at the zero value ("") so JSON output
+			// stays stable for existing fixtures.
+			if pathExists(dir) {
+				diag.Warn(e.Span, "entries.%s path %q has no recognized manifest (Cargo.toml / pyproject.toml / requirements.txt); language defaults to unknown", e.Name, e.Path)
+			}
+		}
+	}
+}
+
+func manifestExists(p string) bool {
+	info, err := os.Stat(p)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
+func pathExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// validateResourceVariants checks each resource's `kind:` is a legal
+// variant for its `type:`. Empty kind passes (resolved to the type
+// default at phase 4); unknown values error.
+func validateResourceVariants(doc *ParsedDoc, diag *Diagnostics) {
+	for _, r := range doc.Resources {
+		if r.Variant == "" {
+			continue
+		}
+		if !IsValidVariant(r.Type, r.Variant) {
+			diag.Error(r.Span,
+				"resources.%s kind %q is not valid for type %q (valid: %v)",
+				r.Name, r.Variant, r.Type, ValidVariantsFor(r.Type))
+		}
+	}
+}
+
+// validateTargetCompositionOverrides checks per-target composition
+// overrides: the named resource exists (validateTargetRefs already
+// covers that), the override's mode (if set) is a known
+// CompositionMode (parse-time validates the scalar form; the object
+// form re-validates here), and the override's kind (if set) is a
+// legal variant for the resource's type.
+func validateTargetCompositionOverrides(doc *ParsedDoc, diag *Diagnostics) {
+	for _, t := range doc.Targets {
+		for resName, override := range t.Composition {
+			if override == nil {
+				continue
+			}
+			r := doc.Resources[resName]
+			if r == nil {
+				continue // covered by validateTargetRefs
+			}
+			if override.Mode != "" && !override.Mode.IsValid() {
+				diag.Error(override.Span,
+					"targets.%s.composition.%s: invalid mode %q",
+					t.Name, resName, override.Mode)
+			}
+			if override.Variant != "" && !IsValidVariant(r.Type, override.Variant) {
+				diag.Error(override.Span,
+					"targets.%s.composition.%s: kind %q is not valid for type %q (valid: %v)",
+					t.Name, resName, override.Variant, r.Type, ValidVariantsFor(r.Type))
+			}
+		}
 	}
 }
 

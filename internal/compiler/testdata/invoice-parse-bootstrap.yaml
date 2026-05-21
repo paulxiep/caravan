@@ -15,6 +15,11 @@
 
 name: invoice-parse
 default_target: dev-bootstrap
+# Explicit override of the new default (`caravan-out/`) back to the
+# pre-output-dir-field layout. Keeps the committed
+# infra/<target>/generated/ tree authoritative for this repo and lets the
+# golden compose-override header keep referencing `infra/`.
+output_dir: infra
 
 entries:
   processing:
@@ -71,3 +76,18 @@ targets:
     default_composition: oss-local
     entries: { processing: container }
     # seams omitted → LLMExtraction defaults to inproc
+
+  # dev-rabbitmq-flip exercises the M4 composition orthogonality flip:
+  # same source, same dispatch, only the queue engine swaps from the
+  # default redis-streams to rabbitmq. M4's resource emitter writes a
+  # rabbitmq: service and flips QUEUE_URL to amqp:// for the processing
+  # consumer. invoice-parse's queue adapter is expected to route on
+  # the URL scheme (redis://... → RedisStreamQueue, amqp://... →
+  # RabbitMQQueue) — env-var-driven, no source edits.
+  dev-rabbitmq-flip:
+    runtime: docker-compose
+    default_composition: oss-local
+    entries: { processing: container }
+    seams:   { LLMExtraction: container }
+    composition:
+      invoice_queue: { mode: oss-local, kind: rabbitmq }

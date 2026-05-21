@@ -100,7 +100,7 @@
       }
     }
   },
-  "target": "dev-bootstrap",
+  "target": "dev-rabbitmq-flip",
   "env_vars": {
     "processing": {
       "CARAVAN_RPC_PEERS": "{\"LLMExtraction\":{\"mode\":\"http\",\"url\":\"http://llm-extractor:8080\"}}"
@@ -132,7 +132,7 @@
       "name": "invoice_queue",
       "type": "queue",
       "composition": "oss-local",
-      "variant": "redis-streams"
+      "variant": "rabbitmq"
     }
   },
   "resource_env_vars": {
@@ -141,7 +141,7 @@
       "AWS_REGION": "us-east-1",
       "AWS_SECRET_ACCESS_KEY": "minioadmin",
       "DATABASE_URL": "postgresql://caravan:caravan@postgres:5432/caravan",
-      "QUEUE_URL": "redis://redis:6379",
+      "QUEUE_URL": "amqp://guest:guest@rabbitmq:5672",
       "S3_ENDPOINT_URL": "http://minio:9000"
     }
   }
