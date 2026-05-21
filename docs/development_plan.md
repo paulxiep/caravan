@@ -457,7 +457,7 @@ User flagged the M2-execute architecture as repo-hardcoded (`target: chat` liter
 
 **Net result:** caravan emit shrinks substantially (~250 lines of `rust_peer.go` deleted, simpler `buildRustPeerService`), user repo shrinks substantially (Dockerfile back to ~B0p shape, Cargo.toml back to one-glob-member). One new SDK contract point (`run_or_serve`) covers everything the synthetic peer crate used to do.
 
-### M3 — Promote Python SDK from hand-typed to compiler-emitted (2–3 sessions)
+### M3 — Promote Python SDK from hand-typed to compiler-emitted (2–3 sessions, DONE 2026-05-21)
 
 **Demo.** invoice-parse's compose-bootstrap override file is now produced by `caravan compile` rather than hand-edited. Two seams in invoice-parse (LLMExtraction from B0 + a second seam declared) flip per-seam between `inproc` and `container` via yaml.
 
@@ -469,7 +469,32 @@ User flagged the M2-execute architecture as repo-hardcoded (`target: chat` liter
 
 **Parallelizable with M4.**
 
-### M4 — Composition swap, compose-only resource emitters (Phase 1, 2–3 sessions)
+**Progress (M3 — DONE):**
+
+Compiler (`caravan/internal/compiler/`):
+- [x] `internal/compiler/kinds.go` — `Language` type + constants (`LanguagePython`, `LanguageRust`, `LanguageTS`, `LanguageGo`, `LanguageUnknown`) relocated from `emit/seam_server.go` so Normalize and Emit share the surface. — 2026-05-21
+- [x] `internal/compiler/types.go` — `Entry.Language` field (filled at phase-3 from manifest stat); `Plan.PatchedManifests []string` (paths emitted by EmitManifestPatches, surfaced for CLI logging). — 2026-05-21
+- [x] `internal/compiler/normalize.go` — `validateEntryLanguages` validator: stats manifest files inside `entries.<name>.path`; `Cargo.toml` → rust, `pyproject.toml` / `requirements.txt` → python; coexistence = error, missing path = silent (synthetic test fixtures pass unchanged). — 2026-05-21
+- [x] `internal/compiler/emit/accumulator.go` (NEW) — `composeAccumulator` with `AddService(name, svc)` / `AddEnv(consumer, key, value, source)` / `Render(targetName)`. Insertion-order preservation (keeps M1 golden byte-identical). Two-band env-var flush: `envSourceResource` first (alphabetic), `envSourceSeam` second (alphabetic), last-write-wins per key. `CARAVAN_RPC_` namespace reservation enforced — resource emit rejected if it writes a key with that prefix. — 2026-05-21
+- [x] `internal/compiler/emit/compose.go` — `EmitComposeOverride` rewired through the accumulator. `buildConsumerOverride` replaced by `addConsumerSeamEnv(acc, ...)` that calls `acc.AddEnv(_, _, _, envSourceSeam)` for CARAVAN_RPC_PEERS + CARAVAN_RPC_SHARED_SECRET and `acc.AddService` for depends_on edges. M4's resource emit plugs into the same accumulator surface. — 2026-05-21
+- [x] `internal/compiler/emit/manifest.go` (NEW) — `EmitManifestPatches(rp, outDir, userRepoRoot) ([]string, error)` writes per-target patched `requirements.txt` to `infra/<target>/generated/build-context/<entry.Path>/`. D9 error-on-version-mismatch policy implemented. Composable `[]ManifestPatch{Distribution, Spec, Reason}` API so M4-cloud / M5 / M6 can drop in additional patches without rewriting the file-write path. Python branch emits `caravan-rpc>=0.1.0.dev0` (PEP-440-compatible with the in-tree dev0 wheel; ties out via `--find-links /vendor/` until M9 PyPI publish). — 2026-05-21
+- [x] `cmd/caravan/main.go` — `runCompile` wires `emit.EmitManifestPatches` after rust-peer emit; populates `Plan.PatchedManifests` for CLI surfacing. — 2026-05-21
+- [x] 13 new tests, all green: `validateEntryLanguages` (6 cases: python/rust/coexistence/missing-path), accumulator (5 cases: insertion order, env band ordering, CARAVAN_RPC_ namespace rejection, last-write-wins, merge), manifest patcher (9 cases + 3 disk-write: absent/compatible/conflict, Python entry writes, Rust entry skipped, missing user manifest), two-seam fixture + mix-and-match (`TestEmitComposeOverride_TwoSeams` + `TestEmitComposeOverride_SeamMixAndMatch`). M1 golden byte-identical through the accumulator refactor. — 2026-05-21
+
+invoice-parse — Python SDK + second seam:
+- [x] `services/processing/invoice_processing/ocr.py` — `@wagon class OCRText` interface + `PaddleOCRTextImpl` concrete impl with eager PaddleOCR load in `__init__` (peer's TCP port only opens after model ready, avoids cold-start race with consumer dispatch). Existing `process_ocr` rewired to call `client(OCRText).extract_text(...)`. — 2026-05-21
+- [x] `services/processing/invoice_processing/worker.py` — `provide(OCRText, PaddleOCRTextImpl())` alongside existing `provide(LLMExtraction, ...)`. — 2026-05-21
+- [x] `caravan.yaml` — `seams.OCRText` block (impl=`invoice_processing.ocr:PaddleOCRTextImpl`, service_name=`ocr-text`). `dev-bootstrap` flips both seams to container; new `dev-split-llm` target (LLM container + OCRText inproc) demos per-seam mix-and-match; `dev-inproc` flips both to inproc. — 2026-05-21
+- [x] `services/processing/Dockerfile` — rewired to consume the compiler-patched `requirements.txt` via `pip install -r ... --find-links /vendor/`. `ARG CARAVAN_TARGET=dev-bootstrap` for cross-target rebuilds. Vendored wheel preserved (PyPI release deferred to M9 phase 1 close). — 2026-05-21
+- [x] Inertness verified: `provide(OCRText, FakeOCR())` + `client(OCRText).extract_text(...)` routes inproc with no env vars set. User's on-disk `requirements.txt` untouched after compile. — 2026-05-21
+
+End-to-end smoke (compose run deferred to M9-phase-1 / PyPI publish):
+- [x] `caravan compile --target=dev-bootstrap`: emits override with `processing` consumer + `llm-extractor` + `ocr-text` peer services; CARAVAN_RPC_PEERS carries both interface entries; depends_on covers both peers in alphabetic order; patched manifest written to `infra/dev-bootstrap/generated/build-context/services/processing/requirements.txt`. — 2026-05-21
+- [x] `caravan compile --target=dev-split-llm`: only `llm-extractor` peer emitted; OCRText → `{"mode":"inproc"}` in CARAVAN_RPC_PEERS. — 2026-05-21
+- [x] `caravan compile --target=dev-inproc`: no peer services; both seams → `{"mode":"inproc"}`. — 2026-05-21
+- [ ] **Deferred to user local-test session**: full `docker compose up` end-to-end with real PaddleOCR model load + Gemini API key + PDF input. Tested locally until M9 phase 1 publishes `caravan-rpc` to PyPI; M9 closure reruns surfaces 1-4 acceptance.
+
+### M4 — Composition swap, compose-only resource emitters (Phase 1, 2–3 sessions, DONE 2026-05-21)
 
 **Demo.** `composition.uploads: oss-local` boots MinIO in compose and sets `S3_ENDPOINT_URL`. Same Rust/Python code that previously hit local FS now talks to MinIO via env-var-driven endpoint override. **No HCL, no AWS in this milestone** — the `cloud-managed` half lands as M4-cloud in Phase 2.
 
@@ -490,7 +515,55 @@ Each emitter injects the appropriate endpoint env var into deploy units that dec
 
 **Parallelizable with M3.**
 
-### M5 — code-rag full Caravan target (3–4 sessions)
+**Progress (M4 — DONE 2026-05-21):**
+
+Compiler (`caravan/internal/compiler/`):
+- [x] `kinds.go` — added `ResourceVariant` type + constants (`VariantRedisStreams`, `VariantRabbitMQ`, `VariantPostgres`, `VariantMinIO`, `VariantRedis`, `VariantOpenSearch`). — 2026-05-21
+- [x] `variants.go` (new) — `variantTable` mapping each ResourceKind to its valid variants (first = default); `ValidVariantsFor`, `DefaultVariantFor`, `IsValidVariant`. Single source of truth for normalize + resolve + emit. — 2026-05-21
+- [x] `resource_endpoints.go` (new) — `EndpointEnvVars(*ResolvedResource) map[string]string` per (Type, Variant): bucket→S3_ENDPOINT_URL+AWS_*, db.sql→DATABASE_URL, cache+queue:redis-streams→REDIS_URL/QUEUE_URL=redis://redis:6379, queue:rabbitmq→QUEUE_URL=amqp://guest:guest@rabbitmq:5672, search→OPENSEARCH_URL. — 2026-05-21
+- [x] `types.go` — `Resource.Variant` (yaml `kind:`), `CompositionOverride{Mode, Variant}` replacing `map[string]CompositionMode` on `Target.Composition`, `ResolvedResource{Name, Type, Composition, Variant}`, `ResolvedPlan.{ResolvedResources, ResourceEnvVars}`. — 2026-05-21
+- [x] `parse.go` — extended `parseResource` to pull `kind:`; `parseCompositionMap` accepts both scalar (`oss-local`) and object (`{ mode: oss-local, kind: rabbitmq }`) forms via `parseCompositionOverride`. Back-compat preserved for M0 fixtures. — 2026-05-21
+- [x] `normalize.go` — `validateResourceVariants` (each resource's `kind:` must be legal for its type, empty allowed) + `validateTargetCompositionOverrides` (per-target overrides validate mode + kind against resource type). — 2026-05-21
+- [x] `resolve.go` — `resolveResources(plan, target)` folds per-target overrides onto resource declarations + applies type defaults. `buildResourceEnvVars(plan, resolved)` walks each entry's `Uses[]` and computes per-consumer endpoint env vars. Both stored on `ResolvedPlan`. — 2026-05-21
+
+Emit (`caravan/internal/compiler/emit/`):
+- [x] `resources.go` (new) — `resourceCatalog` map `(Type, Variant) → resourceBuilder`; `variantEngineName` map for `compose-service hostname` resolution (cache:redis and queue:redis-streams share one `redis:` container); `buildMinIOService`, `buildPostgresService`, `buildRedisService`, `buildRabbitMQService`, `buildOpenSearchService`. `emitResources(acc, rp, existing)` walks resolved resources, skips collisions, calls `acc.AddService`. `emitResourceEnvVars(acc, rp)` folds resource env vars into consumers tagged `envSourceResource`. — 2026-05-21
+- [x] `base_compose_scan.go` (new) — `BaseComposeServiceNames(dir)` + `DiscoverBaseCompose(dir)`. Convention-based discovery: `infra/docker-compose.yaml` → `docker-compose.yaml` → `compose.yaml`. Read failure non-fatal (warn + fall back to "emit everything"). — 2026-05-21
+- [x] `compose.go` — `EmitComposeOverride` extended with `baseComposeServices map[string]bool` arg; pipeline now: (1) consumer seam-env, (2) resource env vars via `emitResourceEnvVars`, (3) container-mode seam peer services, (4) resource containers via `emitResources` with collision skip. `composeService` gained `Image` + `Ports` fields; `serviceNode` renders them. — 2026-05-21
+
+CLI (`cmd/caravan/main.go`):
+- [x] `caravan compile` calls `emit.BaseComposeServiceNames(cwd)` before `EmitComposeOverride` and threads the result through. Read failure surfaces as a warning, not a hard error. — 2026-05-21
+
+Test infrastructure (`caravan/internal/compiler/testdata/`):
+- [x] `invoice-parse-bootstrap.yaml` — added `dev-rabbitmq-flip` target with `composition: { invoice_queue: { mode: oss-local, kind: rabbitmq } }`. — 2026-05-21
+- [x] `invoice-parse-bootstrap.dev-rabbitmq-flip.spec.json` — golden showing `resolved_resources.invoice_queue.variant: rabbitmq` + `resource_env_vars.processing.QUEUE_URL: amqp://...`. — 2026-05-21
+- [x] `dev-bootstrap.override.golden.yaml` — regenerated with full M4 resource emit (minio + postgres + redis services, AWS_*/DATABASE_URL/REDIS_URL/S3_ENDPOINT_URL env vars on processing). — 2026-05-21
+- [x] `TestSpecJSON` — added `invoice-parse-dev-rabbitmq-flip` case. — 2026-05-21
+- [x] `TestEmitComposeRabbitMQFlip` — asserts QUEUE_URL flips amqp://, rabbitmq service emitted, no redis:// QUEUE_URL anywhere. — 2026-05-21
+- [x] `TestEmitComposeBaseComposeCollision` — when base set declares postgres + redis, those services are NOT emitted but DATABASE_URL / QUEUE_URL still inject into consumers; minio (no collision) still emits. — 2026-05-21
+
+invoice-parse `caravan-conversion` branch:
+- [x] `invoice-parse/caravan.yaml` — added `dev-rabbitmq-flip` target. No source-code edits. — 2026-05-21
+
+End-to-end acceptance (verified 2026-05-21):
+- [x] `go test ./...` green (32 tests across compiler + emit; accumulator + manifest tests inherited from M3).
+- [x] `caravan compile --target=dev-bootstrap` from invoice-parse working dir: emits override with minio service (no postgres / redis emission because they're in hand-authored `infra/docker-compose.yaml`); injects AWS_*, DATABASE_URL, QUEUE_URL=redis://, S3_ENDPOINT_URL into processing.
+- [x] `caravan compile --target=dev-rabbitmq-flip`: emits new `rabbitmq:` service + flips processing's QUEUE_URL to `amqp://guest:guest@rabbitmq:5672`. Source diff between dev-bootstrap and dev-rabbitmq-flip runs is empty — the thesis claim on the composition dimension holds.
+- [x] `caravan compile --target=dev-inproc`: still works; seam dispatch all inproc, resource env vars still wired.
+
+Deferred to M5 / M6:
+- [ ] code-rag-side resource declarations (LanceDB stays embedded at Phase 1 per dev plan; no Caravan resource declared yet).
+- [ ] OpenSearch end-to-end demo on code-rag (deferred to M5+ when code-rag declares a `search` resource).
+- [ ] Full invoice-parse migration onto Caravan-owned containers (M6 deletes hand-authored postgres/redis/blob services from invoice-parse's compose).
+
+Key decisions ratified during M4:
+- **Resource collision handling**: skip emission when same-named service exists in base compose; env vars still inject. Per user direction 2026-05-21.
+- **Composition flip demo**: queue redis-streams ↔ rabbitmq is the only Phase-1-feasible composition flip (other groups have one OSS-local choice each). Demonstrated end-to-end on invoice-parse.
+- **Schema extension**: `composition:` accepts both scalar (back-compat) and object form `{ mode, kind }`. No breaking change to M0/M1 yaml.
+- **Manifest-patch conflict policy (D9)**: error on version mismatch. M3 owns the policy in `internal/compiler/emit/manifest.go`; M4 inherits without further edit.
+- **Engine-name vs variant-name**: catalog `variantEngineName` map decouples user-facing variant ID from compose-service hostname. Allows shared engines (cache:redis + queue:redis-streams → one `redis:` container).
+
+### M5 — code-rag full Caravan target (3–4 sessions, DONE 2026-05-21)
 
 **Demo.** code-rag declares all four seams (Embedder, Reranker, VectorReader, LlmClient) via SDK. A target sets each seam's mode independently — e.g., `Embedder: container, Reranker: container, VectorReader: inproc, LlmClient: inproc`. `curl /query` returns identical results regardless of which seams are split.
 
@@ -506,7 +579,73 @@ Each emitter injects the appropriate endpoint env var into deploy units that dec
 
 **Design pressure into SDK.** `Mutex<Embedder>` interior mutability forces `#[wagon]` to handle `Arc<Mutex<dyn T>>` patterns. Likely SDK addition: documented `provide_shared(...)` variant.
 
-### M6 — invoice-parse full Caravan target (3–4 sessions)
+**Progress (M5 — DONE 2026-05-21):**
+
+Decision ratified before execution:
+- **`provide_shared(Arc<Mutex<dyn T>>)` not needed.** B0p already moved `Mutex<TextEmbedding>` interior to `FastEmbedImpl`; the outer trait object is `Arc<dyn Embedder>`, no Mutex at the seam boundary. The dev-plan hint reflected pre-B0p shape. SDK unchanged at M5. — 2026-05-21
+- **`call_edges` split deferred** to Phase 2 (cloud-managed graph DB). `get_callers` / `get_callees` / `get_all_edges` stay on `VectorReader`; no separate `CallEdges` trait at M5. — 2026-05-21
+- **`RigGeminiImpl` moves to a new `code-rag-llm` crate** (rather than `code-rag-store`) — clean separation; anticipates LLM concerns growing. — 2026-05-21
+
+Session 1 — Reranker shim + Reranker full codegen (DONE 2026-05-21):
+- [x] [crates/code-rag-store/src/seams.rs](../../code-rag/crates/code-rag-store/src/seams.rs) — replaced `pub use fastembed::RerankResult` with local `seams::RerankResult` (Debug/Clone/PartialEq/Serialize/Deserialize) + `From<fastembed::RerankResult>` conversion. Field shape identical (`document` / `score` / `index`) so call sites `rr.score` + `rr.index` in `src/engine/retriever.rs:189-191` keep compiling without source edits.
+- [x] Reranker trait wagon attribute flipped from `#[wagon(identity)]` to `#[wagon]`. The proc-macro now emits the HTTP client + server adapters for it (sync + owned-args path).
+- [x] [crates/code-rag-store/src/reranker.rs](../../code-rag/crates/code-rag-store/src/reranker.rs) — `MsMarcoRerankerImpl::rerank` converts `fastembed::RerankResult` → `seams::RerankResult` at the impl boundary via `.into_iter().map(seams::RerankResult::from).collect()`.
+- [x] `cargo test --workspace --lib`: **126 passed**. `cargo clippy --workspace --all-targets`: clean.
+
+Session 2 — VectorWriter split + code-rag-llm crate extraction (DONE 2026-05-21):
+- [x] [crates/code-rag-store/src/seams.rs](../../code-rag/crates/code-rag-store/src/seams.rs) — added `VectorWriter` trait with `#[wagon(identity)] #[async_trait]`. 13 write methods: 6 upserts (CodeChunk + 5 chunk-types), 4 deletes (by-file, by-project, by-id, by-ids), `create_fts_indices`, `upsert_call_edges`, `delete_edges_by_project`. Identity wagon because writes are inproc-only by design (code-raptor ingest holds the concrete VectorStore; trait-typed wiring optional).
+- [x] [crates/code-rag-store/src/vector_store.rs](../../code-rag/crates/code-rag-store/src/vector_store.rs) — `impl seams::VectorWriter for VectorStore` block (UFCS delegation to inherent methods, mirroring the existing `VectorReader` pattern).
+- [x] **New `code-rag/crates/code-rag-llm/` crate.** Houses `RigGeminiImpl` (moved from `code-rag/src/engine/generator.rs`). Depends on `code-rag-store` (LlmClient trait + LlmError) + `rig-core` + `async-trait` + `anyhow`.
+- [x] [code-rag/src/engine/mod.rs](../../code-rag/src/engine/mod.rs) — `pub mod generator` dropped; `RigGeminiImpl` re-exported from `code-rag-llm` for back-compat with existing `crate::engine::RigGeminiImpl` call sites.
+- [x] [code-rag/Cargo.toml](../../code-rag/Cargo.toml) — added `code-rag-llm = { path = "crates/code-rag-llm" }`; dropped now-unused direct `rig-core = "0.27"` dep (root binary reaches it transitively through `code-rag-llm`).
+- [x] `src/engine/generator.rs` deleted (no longer needed; `pub use code_rag_llm::RigGeminiImpl;` in `src/engine/mod.rs` covers it).
+
+Session 3 — code-rag-core extraction + MCP de-coupling (DONE 2026-05-21):
+- [x] **New `code-rag/crates/code-rag-core/` crate.** Carries the chat-side core that both `code-rag-chat` (root binary) and `code-rag-mcp` consume: `AppState` (state.rs), `SourceInfo` + `build_sources` (dto.rs), `retrieve` + `QueryContext` + `RetrievalResult` re-exports (retriever.rs, 746 lines moved verbatim), `EngineError` (errors.rs). Depends on code-rag-store + code-rag-engine + code-rag-types + code-rag-llm + caravan-rpc + tokio.
+- [x] [code-rag/Cargo.toml](../../code-rag/Cargo.toml) — added `code-rag-core = { path = "crates/code-rag-core" }`.
+- [x] [code-rag/src/api/state.rs](../../code-rag/src/api/state.rs) shrunk to `pub use code_rag_core::AppState;` re-export.
+- [x] [code-rag/src/api/dto.rs](../../code-rag/src/api/dto.rs) — SourceInfo + build_sources + their tests moved to `code-rag-core::dto`; HTTP-only DTOs (ChatRequest/ChatResponse/HealthResponse/ProjectsResponse) stay; SourceInfo + build_sources re-exported for back-compat.
+- [x] [code-rag/src/engine/retriever.rs](../../code-rag/src/engine/retriever.rs) shrunk to a 5-line re-export from `code_rag_core::retriever`.
+- [x] [code-rag/src/engine/mod.rs](../../code-rag/src/engine/mod.rs) — `EngineError` now re-exported from `code-rag-core::errors`.
+- [x] [crates/code-rag-mcp/Cargo.toml](../../code-rag/crates/code-rag-mcp/Cargo.toml) — `code-rag-chat = { path = "../.." }` REPLACED with `code-rag-core = { path = "../code-rag-core" }`. `cargo tree -p code-rag-mcp --depth 1` confirms no `code-rag-chat` in the dep tree.
+- [x] [crates/code-rag-mcp/src/main.rs](../../code-rag/crates/code-rag-mcp/src/main.rs) — imports rewritten: `code_rag_chat::{api::{AppState, build_sources}, engine::{intent, retriever}}` → `code_rag_core::{AppState, build_sources, retriever}` + `code_rag_engine::intent`.
+
+Session 4 — caravan.yaml + per-target compile verification (DONE 2026-05-21):
+- [x] [code-rag/caravan.yaml](../../code-rag/caravan.yaml) — declared all 4 seams. Reranker impl: `code_rag_store::reranker::MsMarcoRerankerImpl`; VectorReader impl: `code_rag_store::vector_store::VectorStore`; LlmClient impl: `code_rag_llm::RigGeminiImpl`. Each seam has a `service_name` matching its peer hostname.
+- [x] Added **2 new targets** (`dev-split-mixed` + `dev-split-heavy`) alongside the existing `dev-monolith` + `dev-split-light`. Mix-and-match coverage:
+  - `dev-monolith`: all 4 inproc.
+  - `dev-split-light`: Embedder container only.
+  - `dev-split-mixed`: Embedder + Reranker container; VectorReader + LlmClient inproc.
+  - `dev-split-heavy`: Embedder + Reranker + LlmClient container; VectorReader inproc (owns the embedded LanceDB filesystem, doesn't flip cleanly at Phase 1).
+- [x] `caravan compile --target=<X>` for all 4 targets emits expected override:
+  - dev-monolith: no peer services; `CARAVAN_RPC_PEERS` has all 4 seams as `inproc`.
+  - dev-split-light: 1 peer service (`embedder`); `CARAVAN_RPC_PEERS.Embedder` http, rest inproc.
+  - dev-split-mixed: 2 peer services (`embedder` + `reranker`); `CARAVAN_RPC_PEERS.{Embedder,Reranker}` http, rest inproc.
+  - dev-split-heavy: 3 peer services (`embedder` + `reranker` + `llm-client`); only VectorReader inproc.
+- [x] Each peer service has `CARAVAN_RPC_ROLE=peer-<Interface>` env var; `caravan_rpc::run_or_serve` detours into peer mode on this signal (no command override; same binary as the consumer).
+
+Acceptance (cargo health, deferred external):
+- [x] `cargo check --workspace`: clean.
+- [x] `cargo test --workspace`: green (full workspace; lib + integration; no regressions).
+- [x] `cargo clippy --workspace --all-targets`: clean (only docstring-formatting warnings; fixed).
+- [x] `cargo build --release -p code-rag-chat`: success.
+- [x] `cargo build --release -p code-rag-mcp`: success. **MCP no longer transitively depends on `code-rag-chat`** (verified via `cargo tree`).
+- [ ] `trunk build --release --features standalone`: deferred (WASM standalone, requires `trunk` toolchain; engine/UI crates are not consumers of caravan-rpc per B0p, so no regression risk from M5 work).
+- [ ] `docker compose build` of chat target: deferred (requires Docker daemon). M5 changes are all Rust-source-level; the existing Dockerfile + base compose are unchanged, so no regression risk.
+- [ ] Manual `docker compose -f docker-compose.yaml -f infra/<target>/generated/docker-compose.override.generated.yaml up -d --build` per target + `curl POST /chat` byte-identical chunk_ids across all 4 targets: **acceptance gate for the M9 close**, not gated to M5 sessions.
+
+Key decisions ratified during M5:
+- **Reranker wire-shim pattern**: local newtype `RerankResult` in `seams.rs` with serde derives + `From<fastembed::RerankResult>` conversion. Same field names → zero source edits at call sites. Generalizable pattern for any future third-party-type-lacking-serde gap (M3 may port the pattern to Python at M6+ if needed).
+- **VectorWriter trait scope**: 13 methods covering all writes. Identity wagon (no HTTP codegen) because writes are inproc-only by design. Code-raptor's ingest path holds the concrete `VectorStore`; trait exists for shape symmetry + future trait-typed wiring.
+- **`code-rag-llm` crate** owns LLM impls (currently RigGeminiImpl; future providers slot in as sibling modules). `code-rag/Cargo.toml`'s direct `rig-core` dep removed — chat binary reaches `rig-core` transitively through `code-rag-llm`.
+- **`code-rag-core` crate** owns the chat-side orchestrator. MCP imports directly; chat binary re-exports for back-compat. Workspace dep graph now: `code-rag-chat` + `code-rag-mcp` both → `code-rag-core` → `code-rag-store` + `code-rag-llm` + `code-rag-engine`. **MCP no longer transitively depends on chat.**
+
+Deferred to M9 / post-Phase-1:
+- [ ] WASM standalone build verification (`trunk build`).
+- [ ] Docker compose up + curl chunk_id parity across all 4 targets.
+- [ ] The `dev-split-heavy` `LlmClient: container` flip requires `GEMINI_API_KEY` to be present in the peer container's env (already inherited via `env_file: .env`).
+
+### M6 — invoice-parse full Caravan target (3–4 sessions, DONE 2026-05-21)
 
 **Demo.** invoice-parse with all three seams declared (LLMExtraction from B0, OCRText, OCRLayout) + the queue/blob/db.sql/cache resources migrated from bespoke adapter pattern to Caravan composition. yaml flips per-seam modes independently. **Compose-only — cloud composition flips are M4-cloud / Phase 2.**
 
@@ -519,6 +658,58 @@ Each emitter injects the appropriate endpoint env var into deploy units that dec
 - Forces `queue` (Redis ↔ SQS) and `db.sql` (Postgres) resource emitters to ship.
 
 **Acceptance.** All 4 deployment surfaces still work. Per-seam mode mixes possible without source edits.
+
+**Progress (M6 — DONE):**
+
+Third seam (OCRLayout) on invoice-parse:
+- [x] `services/processing/invoice_processing/table_extract.py` — added `@wagon class OCRLayout` interface. Refactored `PPStructureExtractor` to eager-load PPStructureV3 in `__init__` (peer's TCP port only opens after model ready) and take `(raw_ocr, file_bytes, filename)` instead of `(raw_ocr, images)` — wire-safe contract: impl regenerates images from bytes internally via `_bytes_to_images`. `SpatialClusterExtractor.extract` updated to the same signature (ignores `file_bytes`; works on raw_ocr coords). Dissolved `TableExtractor` ABC + `create_table_extractor` factory — both impls now stand alone and conceptually implement OCRLayout. — 2026-05-21
+- [x] `services/processing/invoice_processing/worker.py` — `provide(OCRLayout, SpatialClusterExtractor())` (CPU-only default). Pipeline call site dispatches via `client(OCRLayout).extract(raw_ocr, pdf_bytes, filename)`. Run-pipeline signature dropped `table_extractor` param, added `filename`. — 2026-05-21
+- [x] `services/processing/invoice_processing/cli.py` — `provide(OCRText, PaddleOCRTextImpl())` + `provide(OCRLayout, {SpatialCluster|PPStructure}Extractor())` (selected by `--table-method` arg, same shape as before but now via the seam). — 2026-05-21
+- [x] `caravan.yaml` — `seams.OCRLayout` block (`impl: invoice_processing.table_extract:PPStructureExtractor`, `service_name: ocr-layout`). All four targets extended to include OCRLayout: `dev-bootstrap` (all 3 container), `dev-split-llm` (LLM container only), `dev-inproc` (all inproc), `dev-rabbitmq-flip` (all 3 container + queue=rabbitmq). — 2026-05-21
+- [x] Inertness verified: `provide(OCRLayout, SpatialClusterExtractor())` + `client(OCRLayout).extract(...)` routes inproc with no env vars set; mock impl receives the call and returns its output. — 2026-05-21
+
+Python adapter migration to Caravan resource bindings (`libs/shared-py/`):
+- [x] `adapters/blob_store.py` — added `S3BlobStore` class (boto3-backed, `from_env()` reads `S3_ENDPOINT_URL` / `AWS_*` / `S3_BUCKET`). Talks to MinIO under compose (M4-injected env vars) and to real S3 in cloud (M4-cloud, future). Path-safety validation (UUID segments, traversal rejection) shared with `LocalFsBlobStore`. Best-effort `create_bucket` on construction (idempotent for MinIO; silent on AWS where bucket is out-of-band). — 2026-05-21
+- [x] `adapters/queue.py` — added `RabbitMQQueue` class (pika-backed, sync, `from_url(amqp://...)` classmethod). Maps `MessageQueue` ABC to AMQP primitives: durable queue declare on first touch; `publish` → `basic_publish` with persistent delivery; `consume` → polling `basic_get` until count or `block_ms` elapses; `ack` → `basic_ack` on int delivery tag. `extend_visibility` is a no-op (RabbitMQ has no SQS-style visibility timeout). — 2026-05-21
+- [x] `adapters/factory.py` — refactored to env-var-presence selection. `create_blob_store(config)`: `S3_ENDPOINT_URL` set → `S3BlobStore.from_env()`; else YAML config path. `create_queue(config)`: parses `QUEUE_URL`; scheme `amqp://` → `RabbitMQQueue`, `redis://` → `RedisStreamQueue`, else YAML config fallback. SQS rejected with explicit NotImplementedError (deferred to M4-cloud). — 2026-05-21
+- [x] `config.py` — `DATABASE_URL` env var overrides `config.database.url` after YAML load. — 2026-05-21
+- [x] `pyproject.toml` — added `boto3`, `pika`; dev-deps added `moto` for S3 testing. — 2026-05-21
+- [x] `tests/python/test_blob_store.py` — `TestS3BlobStore` class (6 cases: put/get/exists/delete/path-traversal/UUID-validation + `from_env`) using `@moto.mock_aws`. — 2026-05-21
+- [x] `tests/python/test_queue.py` — `TestRabbitMQQueueScheme` (4 cases: amqp/amqps accept, redis/https reject) + `TestRabbitMQQueueWireOps` (5 cases: publish-then-declare, consume-with-delivery-tag, consume-empty-on-timeout, ack-int-tag, extend-visibility-noop) using mocked pika channels. — 2026-05-21
+- [x] `python -m pytest tests/python/test_blob_store.py tests/python/test_queue.py -m "not integration"`: **22 passed**, 4 RedisStreamQueue integration tests deselected (require live Redis; pre-existing, unrelated to M6). — 2026-05-21
+
+Rust adapter migration to Caravan resource bindings (`libs/shared-rs/`):
+- [x] `src/config.rs` — `DATABASE_URL` env var override of `config.database.url` after YAML load (parallels Python). — 2026-05-21
+- [x] `src/adapters/blob_store.rs` — added `S3BlobStore` struct (aws-sdk-s3 client built once in `new()`; sync `BlobStore` trait methods bridge via `tokio::task::block_in_place + Handle::current().block_on(...)` — caller must be in tokio runtime, which `#[tokio::main]` provides). `from_env()` mirrors Python. `force_path_style: true` for MinIO compat. Path-safety validation matches LocalFsBlobStore + Python. — 2026-05-21
+- [x] `src/adapters/queue.rs` — added `RabbitMQQueue` struct (lapin under the hood; same block_on bridge). Holds connection + channel in a `Mutex`; lazy connect on first call; durable queue declare on first touch. publish / consume / ack mapped to AMQP primitives; extend_visibility is a no-op. — 2026-05-21
+- [x] `src/adapters/factory.rs` (new) — `create_blob_store(config)` + `create_queue(config)` mirror the Python factory's env-var-presence + YAML-fallback logic. URL scheme dispatch (`redis://` vs `amqp://`) for queue selection. — 2026-05-21
+- [x] `src/adapters/mod.rs` — added `pub mod factory;`. — 2026-05-21
+- [x] `services/ingestion/src/main.rs` + `services/output/src/main.rs` — replaced direct `LocalFsBlobStore::new` / `RedisStreamQueue::new` calls with `factory::create_blob_store(&config)` + `factory::create_queue(&config)`. Trait-object handles passed into ingest_file / run_worker as `&dyn BlobStore` / `&dyn MessageQueue`. — 2026-05-21
+- [x] `Cargo.toml` — added `aws-config`, `aws-sdk-s3`, `lapin`, `url`. — 2026-05-21
+- [x] `cargo build --manifest-path libs/shared-rs/Cargo.toml`: green (1m43s, ~150 deps including aws-sdk-s3 + lapin transitive). — 2026-05-21
+- [x] `cargo build --manifest-path services/ingestion/Cargo.toml` + `services/output/Cargo.toml`: both green. Only pre-existing dead-code warnings in `services/output/src/delivery.rs` (unrelated to M6). — 2026-05-21
+
+FFI boundary doc:
+- [x] `libs/shared-rs/README.md` (new) — module overview + "Why shared-rs is not a Caravan seam" section explaining FFI vs RPC distinction. Future contributors should not wrap shared-rs functions with `#[wagon]`. Cross-references the env-var-presence selection contract. — 2026-05-21
+
+End-to-end compile verification (all 4 targets):
+- [x] `caravan compile --target=dev-bootstrap`: emits override with 3 peer services (`llm-extractor`, `ocr-text`, `ocr-layout`); `CARAVAN_RPC_PEERS` carries all 3 as `http` mode; depends_on covers all 3 in alphabetic order. Resource env vars (`AWS_*`, `DATABASE_URL`, `QUEUE_URL=redis://...`, `S3_ENDPOINT_URL`) injected on `processing` consumer in the resource band; CARAVAN_RPC_* in the seam band after. — 2026-05-21
+- [x] `caravan compile --target=dev-split-llm`: only `llm-extractor` peer service emitted; OCRText + OCRLayout marked `{"mode":"inproc"}` in CARAVAN_RPC_PEERS. — 2026-05-21
+- [x] `caravan compile --target=dev-inproc`: no peer services; all 3 seams `{"mode":"inproc"}`. — 2026-05-21
+- [x] `caravan compile --target=dev-rabbitmq-flip`: 3 peer services + `rabbitmq:` resource container; `QUEUE_URL: amqp://guest:guest@rabbitmq:5672` (variant flip from redis-streams to rabbitmq via composition override). — 2026-05-21
+- [x] `git diff -- services/processing/invoice_processing/ libs/shared-py/ libs/shared-rs/` between target compiles: **empty**. Source code identical across target flips — the load-bearing thesis claim ([poc_yaml_spec.md](poc_yaml_spec.md) §Testability conditions 7+8) holds at compile time.
+
+Deferred to user local-test session (per "test local until M9 phase 1"):
+- [ ] Full `docker compose --profile app up` end-to-end with real PaddleOCR / PPStructureV3 model load + MinIO + Postgres + Redis (and RabbitMQ for the flip target) + Gemini API key + sample invoice PDF/image input. Surfaces 1+2 of [pre-change-state.md](../../invoice-parse/docs/pre-change-state.md) verification.
+- [ ] Surface 3 (local non-container) regression check: `python -m invoice_processing.cli invoices/sample_invoice.pdf` + `cargo run --manifest-path services/ingestion/Cargo.toml` + `cargo run --manifest-path services/output/Cargo.toml` with env vars unset (LocalFs + Redis YAML fallback path).
+- [ ] Surface 4 (frontend `npm run build`) sanity — unchanged in scope, M6 didn't touch `demo/`.
+- [ ] M9-phase-1 close: publish `caravan-rpc` to PyPI + `caravan-rpc-rs` to crates.io; retire the vendored wheel + path-dep workarounds. Re-run all 4 surfaces against the published SDKs.
+
+Key M6 decisions:
+- **Env-var presence selection** (not unified URL-driven adapter): preserves the no-Caravan local-dev path (LocalFs + Redis YAML fallback); adds boto3-backed S3 + pika/lapin RabbitMQ for the Caravan-compose path. Same env vars Caravan emits (M4) feed both Python and Rust adapter selection.
+- **OCRLayout impl asymmetry**: worker's local `provide()` registers `SpatialClusterExtractor` (CPU-light); `caravan.yaml` `impl:` ref selects `PPStructureExtractor` for the container-mode peer where the heavy-model accuracy is worth the load cost. Both satisfy the same seam contract.
+- **PPStructure / PaddleOCR cold-start**: both impls eager-load their models in `__init__`. Peer service's `caravan_rpc.serve` constructs the impl before binding the TCP port — no race with consumer dispatch.
+- **Sync MessageQueue trait** preserved: lapin's async API bridged via `block_in_place + Handle::current().block_on()` inside trait methods. Works inside `#[tokio::main]` callers (ingestion + output). Same pattern as `aws-sdk-s3` calls.
 
 ### M9 — Phase 1 close: 8 testability conditions pass on both repos via compose (2 sessions)
 

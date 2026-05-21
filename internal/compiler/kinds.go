@@ -84,6 +84,35 @@ func (r RuntimeKind) IsValid() bool {
 	return r == RuntimeDockerCompose || r == RuntimeAWS
 }
 
+// ResourceVariant names the concrete OSS-local container choice for a
+// resource. Valid values are per-ResourceKind; the (kind, variant)
+// catalog lives in internal/compiler/emit/resources.go so the variant
+// surface and the container builder stay co-located.
+//
+// M4 (Phase 1) supports:
+//
+//	queue:   redis-streams (default), rabbitmq
+//	db.sql:  postgres (default)
+//	bucket:  minio (default)
+//	cache:   redis (default)
+//	search:  opensearch (default)
+//
+// Empty value → use the default for the resource's type (resolved
+// during phase 4).
+type ResourceVariant string
+
+// Variant constants for the variants M4 actually emits. Not exhaustive
+// — future variants (memcached, valkey, mysql, etc.) get added here
+// and to the emit/resources.go catalog together.
+const (
+	VariantRedisStreams ResourceVariant = "redis-streams"
+	VariantRabbitMQ     ResourceVariant = "rabbitmq"
+	VariantPostgres     ResourceVariant = "postgres"
+	VariantMinIO        ResourceVariant = "minio"
+	VariantRedis        ResourceVariant = "redis"
+	VariantOpenSearch   ResourceVariant = "opensearch"
+)
+
 // CompositionMode is the `composition:` value on a resource (or
 // `default_composition:` on a target).
 type CompositionMode string
@@ -126,3 +155,21 @@ const (
 func (m SeamDispatchMode) IsValid() bool {
 	return m == SeamInproc || m == SeamContainer || m == SeamLambda
 }
+
+// Language tags an entry's source language. Determined at phase-3
+// (Normalize) by stat-ing the manifest files in `entries.<name>.path`:
+// `Cargo.toml` → rust, `pyproject.toml`/`requirements.txt` → python.
+// The emit phase also re-derives a seam's impl language from the shape
+// of its `impl:` string (see emit/seam_server.go::detectLanguage).
+//
+// Constants are shared between Normalize and Emit so both phases agree
+// on the same set.
+type Language string
+
+const (
+	LanguagePython  Language = "python"
+	LanguageRust    Language = "rust"
+	LanguageTS      Language = "ts"      // post-PoC
+	LanguageGo      Language = "go"      // post-PoC
+	LanguageUnknown Language = "unknown"
+)

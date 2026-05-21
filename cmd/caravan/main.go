@@ -9,7 +9,7 @@
 //
 //	caravan check    [--config=path]                 phases 1–2; exit 1 on schema errors
 //	caravan spec     [--config=path] [--target=name] phases 1–3 (or 1–4 with --target); JSON to stdout
-//	caravan compile  --target=name [--config=path]   phases 1–4 + placeholder files in infra/<target>/generated/
+//	caravan compile  --target=name [--config=path]   phases 1–4 + placeholder files in <output_dir>/<target>/generated/ (yaml `output_dir:`, default `caravan-out/`)
 //	caravan --version | -v                           print version
 //
 // M1 fills the Emit phase for the docker-compose override target.
@@ -59,7 +59,7 @@ func usage(w *os.File) {
 Subcommands:
   check    [--config=path]                 phases 1–2 (lex + parse); exit 1 on schema errors
   spec     [--config=path] [--target=name] phases 1–3 (or 1–4 with --target); JSON Plan/ResolvedPlan to stdout
-  compile  --target=name [--config=path]   phases 1–4 + write placeholder files to infra/<target>/generated/
+  compile  --target=name [--config=path]   phases 1–4 + write placeholder files to <output_dir>/<target>/generated/ (yaml output_dir, default caravan-out/)
 
 Flags:
   --config=PATH    path to caravan.yaml (default: ./caravan.yaml)
@@ -150,7 +150,7 @@ func runCompile(args []string) int {
 		return 1
 	}
 
-	outDir := filepath.Join("infra", *target, "generated")
+	outDir := filepath.Join(rp.Plan.OutputDir, *target, "generated")
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -166,7 +166,19 @@ func runCompile(args []string) int {
 			return 1
 		}
 		userRepoName := filepath.Base(cwd)
-		body, err := emit.EmitComposeOverride(rp, userRepoName)
+
+		// M4: scan the user's hand-authored compose for collision
+		// detection. When a resource's emitted service name (e.g.
+		// `postgres`, `redis`) already appears in the base compose,
+		// caravan skips the duplicate container but still injects
+		// the resource endpoint env vars into consumers. Read failure
+		// is non-fatal: log + fall back to emit-everything.
+		baseServices, scanErr := emit.BaseComposeServiceNames(cwd)
+		if scanErr != nil {
+			fmt.Fprintf(os.Stderr, "caravan compile: warning: %v (continuing with full resource emission)\n", scanErr)
+		}
+
+		body, err := emit.EmitComposeOverride(rp, userRepoName, baseServices)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -188,6 +200,18 @@ func runCompile(args []string) int {
 			return 1
 		}
 		wrote = append(wrote, peerPaths...)
+
+		// M3: emit per-target patched manifests (requirements.txt for
+		// Python entries; Rust is a no-op until its own milestone).
+		// User's on-disk manifest is read but never modified; the
+		// patched copy lives in the per-target build-context.
+		manifestPaths, err := emit.EmitManifestPatches(rp, outDir, cwd)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		wrote = append(wrote, manifestPaths...)
+		rp.Plan.PatchedManifests = manifestPaths
 	}
 
 	// HCL emission lands at M4-cloud. Until then we still drop a
@@ -238,16 +262,9 @@ func writeRustPeerCrates(_ *compiler.ResolvedPlan, _, _ string) ([]string, error
 	// `CARAVAN_RPC_ROLE=peer-<Iface>`; the SDK's `run_or_serve` detours
 	// inside the chat binary. No on-disk emission needed.
 	//
-	// Also clear any stale infra/peers/ left over from M2-pre-refactor
-	// runs, so the user repo doesn't carry orphan generated files.
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("getcwd: %w", err)
-	}
-	peersRoot := filepath.Join(cwd, "infra", "peers")
-	if err := os.RemoveAll(peersRoot); err != nil {
-		return nil, fmt.Errorf("clear stale infra/peers/: %w", err)
-	}
+	// The earlier stale-`infra/peers/` sweep was dropped when output_dir
+	// became yaml-configurable: it was a one-shot M2 migration aid and
+	// only made sense for the formerly-hardcoded `infra/` layout.
 	return nil, nil
 }
 

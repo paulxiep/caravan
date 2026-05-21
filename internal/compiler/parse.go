@@ -31,6 +31,7 @@ func Parse(raw *RawYAML) (*ParsedDoc, *Diagnostics, error) {
 	dispatchFields(raw.File, root, diag, "top-level", fieldMap{
 		"name":           func(v *yaml.Node) { doc.Name = stringScalar(raw.File, v, diag, "name") },
 		"default_target": func(v *yaml.Node) { doc.DefaultTarget = stringScalar(raw.File, v, diag, "default_target") },
+		"output_dir":     func(v *yaml.Node) { doc.OutputDir = stringScalar(raw.File, v, diag, "output_dir") },
 		"entries":        func(v *yaml.Node) { parseEntries(raw.File, v, doc, diag) },
 		"seams":          func(v *yaml.Node) { parseSeams(raw.File, v, doc, diag) },
 		"resources":      func(v *yaml.Node) { parseResources(raw.File, v, doc, diag) },
@@ -280,6 +281,14 @@ func parseResource(file, name string, k, v *yaml.Node, diag *Diagnostics) *Resou
 				return
 			}
 			r.Composition = mode
+		case "kind":
+			r.Variant = ResourceVariant(stringScalar(file, fv, diag, what+".kind"))
+		case "user":
+			r.User = stringScalar(file, fv, diag, what+".user")
+		case "password":
+			r.Password = stringScalar(file, fv, diag, what+".password")
+		case "dbname":
+			r.DBName = stringScalar(file, fv, diag, what+".dbname")
 		default:
 			var anyVal any
 			if err := fv.Decode(&anyVal); err == nil {
@@ -395,6 +404,63 @@ func parseSeamDispatchMap(file string, n *yaml.Node, diag *Diagnostics, what str
 	return parseEnumMap(file, n, diag, what, SeamDispatchMode.IsValid)
 }
 
-func parseCompositionMap(file string, n *yaml.Node, diag *Diagnostics, what string) map[string]CompositionMode {
-	return parseEnumMap(file, n, diag, what, CompositionMode.IsValid)
+// parseCompositionMap parses `targets.<X>.composition:`. Each entry
+// accepts two yaml shapes for back-compat + M4 extensibility:
+//
+//	composition:
+//	  invoice_queue: oss-local                              # scalar (M0)
+//	  invoice_queue: { mode: oss-local, kind: rabbitmq }    # object (M4)
+//
+// Scalar form sets Mode only; object form may set Mode and/or Variant.
+// Either field may be empty; resolve.go layers the override on top of
+// the resource's own declaration.
+func parseCompositionMap(file string, n *yaml.Node, diag *Diagnostics, what string) map[string]*CompositionOverride {
+	if n == nil || n.Kind != yaml.MappingNode {
+		diag.Error(nodeSpan(file, n), "%s must be a mapping", what)
+		return nil
+	}
+	out := map[string]*CompositionOverride{}
+	forEachKV(n, func(k, v *yaml.Node) {
+		entryWhat := what + "." + k.Value
+		out[k.Value] = parseCompositionOverride(file, v, diag, entryWhat)
+	})
+	return out
+}
+
+// parseCompositionOverride accepts either a scalar string (treated as
+// the `mode:` value) or an object {mode, kind}.
+func parseCompositionOverride(file string, n *yaml.Node, diag *Diagnostics, what string) *CompositionOverride {
+	if n == nil {
+		diag.Error(nodeSpan(file, n), "%s must be a scalar or mapping", what)
+		return &CompositionOverride{}
+	}
+	o := &CompositionOverride{Span: nodeSpan(file, n)}
+	switch n.Kind {
+	case yaml.ScalarNode:
+		val := n.Value
+		mode := CompositionMode(val)
+		if !mode.IsValid() {
+			diag.Error(nodeSpan(file, n), "invalid composition mode %q (%s)", val, what)
+			return o
+		}
+		o.Mode = mode
+	case yaml.MappingNode:
+		dispatchFields(file, n, diag, what, fieldMap{
+			"mode": func(v *yaml.Node) {
+				val := stringScalar(file, v, diag, what+".mode")
+				mode := CompositionMode(val)
+				if !mode.IsValid() {
+					diag.Error(nodeSpan(file, v), "invalid composition mode %q (%s.mode)", val, what)
+					return
+				}
+				o.Mode = mode
+			},
+			"kind": func(v *yaml.Node) {
+				o.Variant = ResourceVariant(stringScalar(file, v, diag, what+".kind"))
+			},
+		})
+	default:
+		diag.Error(nodeSpan(file, n), "%s must be a scalar or mapping", what)
+	}
+	return o
 }

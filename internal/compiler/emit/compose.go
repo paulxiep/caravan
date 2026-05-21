@@ -31,9 +31,16 @@ const sharedSecretPlaceholder = "dev-secret-placeholder"
 // When set to "" the prefix is omitted (back-compat for callers that
 // don't need the prefix, e.g. invoice-parse's Python path).
 //
+// `baseComposeServices` is the set of service names already declared
+// in the user's hand-authored compose. M4 uses it to skip emitting
+// resource containers (Postgres, Redis, MinIO, RabbitMQ, OpenSearch)
+// when the same name already exists — resource env vars still flow
+// into the consumer regardless. Pass nil / empty map when no
+// collision detection is desired (emit-everything mode).
+//
 // The output is yaml encoded via yaml.Node for stable key order
 // (golden-file tests would flake on Go map randomization otherwise).
-func EmitComposeOverride(rp *compiler.ResolvedPlan, userRepoName string) ([]byte, error) {
+func EmitComposeOverride(rp *compiler.ResolvedPlan, userRepoName string, baseComposeServices map[string]bool) ([]byte, error) {
 	if rp == nil || rp.Plan == nil {
 		return nil, fmt.Errorf("nil ResolvedPlan")
 	}
@@ -42,18 +49,29 @@ func EmitComposeOverride(rp *compiler.ResolvedPlan, userRepoName string) ([]byte
 		return nil, fmt.Errorf("target %q not in plan", rp.TargetName)
 	}
 
-	services := []composeService{}
+	acc := newComposeAccumulator()
 
-	// 1. Consumer entries: inject CARAVAN_RPC_PEERS + the shared secret.
+	// 1. Consumer entries: inject CARAVAN_RPC_PEERS + the shared secret
+	//    via the accumulator's seam-source band.
 	for _, entryName := range sortedKeys(target.Entries) {
 		envVars := rp.EnvVars[entryName]
 		if len(envVars) == 0 {
 			continue
 		}
-		services = append(services, buildConsumerOverride(entryName, envVars))
+		if err := addConsumerSeamEnv(acc, entryName, envVars); err != nil {
+			return nil, err
+		}
 	}
 
-	// 2. Container-mode seams: emit a peer service per seam.
+	// 2. Resource env vars (M4): fold endpoint URLs / credentials into
+	//    consumers that declared `uses:` for a resolved resource.
+	//    Tagged envSourceResource so the accumulator flushes them
+	//    before the seam-source band.
+	if err := emitResourceEnvVars(acc, rp); err != nil {
+		return nil, err
+	}
+
+	// 3. Container-mode seams: emit a peer service per seam.
 	for _, seamName := range sortedKeys(target.Seams) {
 		mode := target.Seams[seamName]
 		if mode != compiler.SeamContainer {
@@ -67,10 +85,17 @@ func EmitComposeOverride(rp *compiler.ResolvedPlan, userRepoName string) ([]byte
 		if err != nil {
 			return nil, err
 		}
-		services = append(services, svc)
+		acc.AddService(svc.Name, svc)
 	}
 
-	return renderCompose(target.Name, services)
+	// 4. Resource containers (M4): emit OSS-local containers for each
+	//    resolved resource — but only when the base compose doesn't
+	//    already publish a same-named service.
+	if err := emitResources(acc, rp, baseComposeServices); err != nil {
+		return nil, err
+	}
+
+	return acc.Render(target.Name, rp.Plan.OutputDir)
 }
 
 // --- service builders -------------------------------------------------------
@@ -80,13 +105,21 @@ func EmitComposeOverride(rp *compiler.ResolvedPlan, userRepoName string) ([]byte
 // because the field order is fixed across all services — easier to
 // keep deterministic.
 type composeService struct {
-	Name        string
+	Name string
+	// Image is the pre-built image reference (e.g. "minio/minio:latest").
+	// Mutually exclusive with Build at render time — resource containers
+	// (M4) set Image; consumer overrides + seam peers (M1/M2) set Build.
+	Image       string
 	Build       *composeBuild
 	EnvFile     []string
 	Environment []composeEnvKV
 	Command     []string
 	DependsOn   []composeDependsOn
 	Profiles    []string
+	// Ports is a list of `"host:container"` mappings rendered under
+	// compose's `ports:` key. Used by resource containers (M4) so the
+	// user can reach Postgres / Redis / MinIO from the host.
+	Ports []string
 }
 
 type composeBuild struct {
@@ -104,25 +137,29 @@ type composeDependsOn struct {
 	Condition string
 }
 
-// buildConsumerOverride emits the env-only override block that
-// injects CARAVAN_RPC_PEERS + shared-secret into a consumer entry,
-// plus a depends_on edge to each peer service it talks to.
-func buildConsumerOverride(entryName string, envVars map[string]string) composeService {
-	svc := composeService{
-		Name: entryName,
-		Environment: []composeEnvKV{
-			{Key: "CARAVAN_RPC_PEERS", Value: envVars["CARAVAN_RPC_PEERS"]},
-			{Key: "CARAVAN_RPC_SHARED_SECRET", Value: sharedSecretPlaceholder},
-		},
+// addConsumerSeamEnv contributes the seam-side env vars
+// (CARAVAN_RPC_PEERS, CARAVAN_RPC_SHARED_SECRET) and depends_on edges
+// for a consumer entry to the accumulator. M4 contributes resource-side
+// env vars to the same consumer via acc.AddEnv(_, _, _, envSourceResource).
+func addConsumerSeamEnv(acc *composeAccumulator, entryName string, envVars map[string]string) error {
+	if err := acc.AddEnv(entryName, "CARAVAN_RPC_PEERS", envVars["CARAVAN_RPC_PEERS"], envSourceSeam); err != nil {
+		return err
+	}
+	if err := acc.AddEnv(entryName, "CARAVAN_RPC_SHARED_SECRET", sharedSecretPlaceholder, envSourceSeam); err != nil {
+		return err
 	}
 	// depends_on: every peer service named in the peer-table URLs.
+	deps := composeService{}
 	for _, peerHost := range peerHostsFromEnv(envVars["CARAVAN_RPC_PEERS"]) {
-		svc.DependsOn = append(svc.DependsOn, composeDependsOn{
+		deps.DependsOn = append(deps.DependsOn, composeDependsOn{
 			Service:   peerHost,
 			Condition: "service_started",
 		})
 	}
-	return svc
+	if len(deps.DependsOn) > 0 {
+		acc.AddService(entryName, deps)
+	}
+	return nil
 }
 
 // buildSeamPeerService emits the new service for a container-mode seam.
@@ -144,9 +181,9 @@ func buildConsumerOverride(entryName string, envVars map[string]string) composeS
 func buildSeamPeerService(seam *compiler.Seam, rp *compiler.ResolvedPlan, userRepoName string) (composeService, error) {
 	lang := detectLanguage(seam)
 	switch lang {
-	case LanguagePython:
-		return buildPythonPeerService(seam)
-	case LanguageRust:
+	case compiler.LanguagePython:
+		return buildPythonPeerService(seam, rp)
+	case compiler.LanguageRust:
 		return buildRustPeerService(seam, rp, userRepoName), nil
 	default:
 		return composeService{}, fmt.Errorf("seam %q: unsupported impl language %q (impl=%q)", seam.Name, lang, seam.Impl)
@@ -155,8 +192,8 @@ func buildSeamPeerService(seam *compiler.Seam, rp *compiler.ResolvedPlan, userRe
 
 // buildPythonPeerService keeps the existing M1 shape: reuse user's
 // image + command override invoking `python -m caravan_rpc.serve`.
-func buildPythonPeerService(seam *compiler.Seam) (composeService, error) {
-	emitter, ok := SeamServerCommands[LanguagePython]
+func buildPythonPeerService(seam *compiler.Seam, rp *compiler.ResolvedPlan) (composeService, error) {
+	emitter, ok := SeamServerCommands[compiler.LanguagePython]
 	if !ok {
 		return composeService{}, fmt.Errorf("seam %q: no SeamServerCommand for Python (internal bug)", seam.Name)
 	}
@@ -172,6 +209,7 @@ func buildPythonPeerService(seam *compiler.Seam) (composeService, error) {
 		},
 		Environment: []composeEnvKV{
 			{Key: "CARAVAN_RPC_SHARED_SECRET", Value: sharedSecretPlaceholder},
+			{Key: "CARAVAN_RPC_PEERS", Value: rp.PeersJSON},
 		},
 		Command:  cmd,
 		Profiles: []string{"app"},
@@ -212,13 +250,20 @@ func buildRustPeerService(seam *compiler.Seam, rp *compiler.ResolvedPlan, userRe
 
 	role := "peer-" + seam.Name
 
+	// Seam peer services share the unit's peer table so a peer can
+	// dispatch outward to other seams in the same unit at runtime.
+	// `rp.PeersJSON` is the single marshaled view set once in
+	// Resolve(); peer services reference it directly.
+	envs := []composeEnvKV{
+		{Key: "CARAVAN_RPC_ROLE", Value: role},
+		{Key: "CARAVAN_RPC_SHARED_SECRET", Value: sharedSecretPlaceholder},
+		{Key: "CARAVAN_RPC_PEERS", Value: rp.PeersJSON},
+	}
+
 	svc := composeService{
-		Name:  seam.ServiceName,
-		Build: build,
-		Environment: []composeEnvKV{
-			{Key: "CARAVAN_RPC_ROLE", Value: role},
-			{Key: "CARAVAN_RPC_SHARED_SECRET", Value: sharedSecretPlaceholder},
-		},
+		Name:        seam.ServiceName,
+		Build:       build,
+		Environment: envs,
 		// No `command:` — the chat binary's default CMD handles the
 		// role switch via `run_or_serve`.
 		Profiles: []string{"app"},
@@ -295,9 +340,9 @@ func peerHostsFromEnv(envValue string) []string {
 // renderCompose serializes a list of composeService into yaml using
 // yaml.Node for stable key order. The header comment is conservative
 // — it labels the file as generated and warns against hand-editing.
-func renderCompose(targetName string, services []composeService) ([]byte, error) {
+func renderCompose(targetName, outputDir string, services []composeService) ([]byte, error) {
 	doc := &yaml.Node{Kind: yaml.DocumentNode}
-	doc.HeadComment = composeHeaderComment(targetName)
+	doc.HeadComment = composeHeaderComment(targetName, outputDir)
 
 	root := &yaml.Node{Kind: yaml.MappingNode}
 	doc.Content = []*yaml.Node{root}
@@ -323,25 +368,31 @@ func renderCompose(targetName string, services []composeService) ([]byte, error)
 	return buf.Bytes(), nil
 }
 
-func composeHeaderComment(targetName string) string {
+func composeHeaderComment(targetName, outputDir string) string {
 	return fmt.Sprintf(
 		" Generated by `caravan compile --target=%s`. Do not edit by hand.\n"+
 			" Layer this override atop the hand-authored docker-compose.yaml:\n"+
 			"   docker compose \\\n"+
 			"     -f infra/docker-compose.yaml \\\n"+
-			"     -f infra/%s/generated/docker-compose.override.generated.yaml \\\n"+
+			"     -f %s/%s/generated/docker-compose.override.generated.yaml \\\n"+
 			"     --profile app up",
-		targetName, targetName,
+		targetName, outputDir, targetName,
 	)
 }
 
 // serviceNode builds the yaml.Node tree for one composeService. Field
-// order: build → env_file → environment → command → depends_on →
-// profiles. Matches B0's hand-edited override for diff-friendliness.
+// order: image → build → env_file → environment → command → ports →
+// depends_on → profiles. Matches B0's hand-edited override for
+// diff-friendliness in the consumer / seam-peer cases (which omit
+// image + ports); image and ports are added before / after the
+// existing band for resource containers (M4).
 func serviceNode(svc composeService) *yaml.Node {
 	out := &yaml.Node{Kind: yaml.MappingNode}
 	add := func(key string, val *yaml.Node) {
 		out.Content = append(out.Content, scalarNode(key), val)
+	}
+	if svc.Image != "" {
+		add("image", scalarNode(svc.Image))
 	}
 	if svc.Build != nil {
 		add("build", buildNode(svc.Build))
@@ -357,6 +408,11 @@ func serviceNode(svc composeService) *yaml.Node {
 		// yaml.v3 emits numeric-looking strings unquoted (`8080` not
 		// `"8080"`), which compose rejects. Force quoted style here.
 		add("command", quotedListNode(svc.Command))
+	}
+	if len(svc.Ports) > 0 {
+		// Force quoted style on port mappings — the `5432:5432` shape
+		// looks numeric to the yaml emitter without it.
+		add("ports", quotedListNode(svc.Ports))
 	}
 	if len(svc.DependsOn) > 0 {
 		add("depends_on", dependsOnNode(svc.DependsOn))
@@ -445,4 +501,3 @@ func sortedStrings(s []string) []string {
 	}
 	return s
 }
-

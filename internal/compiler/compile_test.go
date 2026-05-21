@@ -36,6 +36,16 @@ func TestSpecJSON(t *testing.T) {
 			target:   "dev-inproc",
 			goldenJS: "testdata/invoice-parse-bootstrap.dev-inproc.spec.json",
 		},
+		{
+			// M4: composition flip target — proves the resolver applies
+			// the per-target `composition: { kind: rabbitmq }` override,
+			// landing variant=rabbitmq + QUEUE_URL=amqp://... on the
+			// processing consumer.
+			name:     "invoice-parse-dev-rabbitmq-flip",
+			fixture:  "testdata/invoice-parse-bootstrap.yaml",
+			target:   "dev-rabbitmq-flip",
+			goldenJS: "testdata/invoice-parse-bootstrap.dev-rabbitmq-flip.spec.json",
+		},
 	}
 
 	for _, tc := range cases {
@@ -95,6 +105,138 @@ func TestSpecMatchesB0HandEdit(t *testing.T) {
 	want := `{"LLMExtraction":{"mode":"http","url":"http://llm-extractor:8080"}}`
 	if got != want {
 		t.Errorf("CARAVAN_RPC_PEERS mismatch:\n  got:  %s\n  want: %s", got, want)
+	}
+}
+
+// TestValidateEntryLanguages covers the M3 language-detection validator.
+// Entry.Language is filled from the manifest files present in the entry's
+// path:
+//
+//	pyproject.toml or requirements.txt → python
+//	Cargo.toml                         → rust
+//	both                               → error (ambiguous)
+//	neither + path exists              → warn
+//	neither + path missing             → silent (test-fixture friendly)
+func TestValidateEntryLanguages(t *testing.T) {
+	cases := []struct {
+		name      string
+		manifests []string // filenames to materialize inside entryPath
+		wantLang  Language
+		wantErr   string // substring expected in diagnostics (or "")
+		wantWarn  string // substring expected in diagnostics (or "")
+	}{
+		{
+			name:      "python via pyproject.toml",
+			manifests: []string{"pyproject.toml"},
+			wantLang:  LanguagePython,
+		},
+		{
+			name:      "python via requirements.txt",
+			manifests: []string{"requirements.txt"},
+			wantLang:  LanguagePython,
+		},
+		{
+			name:      "rust via Cargo.toml",
+			manifests: []string{"Cargo.toml"},
+			wantLang:  LanguageRust,
+		},
+		{
+			name:      "ambiguous: rust + python manifests both present",
+			manifests: []string{"Cargo.toml", "pyproject.toml"},
+			wantErr:   "ambiguous language",
+		},
+		{
+			name:      "path exists but no manifest → warn",
+			manifests: []string{}, // dir made empty, no manifest files
+			wantWarn:  "no recognized manifest",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			entryDir := filepath.Join(tmp, "svc")
+			if err := os.MkdirAll(entryDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for _, m := range tc.manifests {
+				if err := os.WriteFile(filepath.Join(entryDir, m), []byte(""), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			yamlBody := `name: x
+default_target: t
+entries:
+  svc:
+    path: ./svc
+targets:
+  t: { runtime: docker-compose }
+`
+			path := filepath.Join(tmp, "caravan.yaml")
+			if err := os.WriteFile(path, []byte(yamlBody), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			plan, diag, err := CompileFile(path)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			buf := &bytes.Buffer{}
+			_, _ = diag.WriteTo(buf)
+			body := buf.String()
+			if tc.wantErr != "" {
+				if !strings.Contains(body, tc.wantErr) {
+					t.Errorf("expected error containing %q; got:\n%s", tc.wantErr, body)
+				}
+				return
+			}
+			if tc.wantWarn != "" && !strings.Contains(body, tc.wantWarn) {
+				t.Errorf("expected warn containing %q; got:\n%s", tc.wantWarn, body)
+			}
+			if diag.HasErrors() {
+				t.Fatalf("unexpected errors:\n%s", body)
+			}
+			if plan == nil {
+				t.Fatal("nil plan")
+			}
+			got := plan.Entries["svc"].Language
+			if got != tc.wantLang {
+				t.Errorf("Language: got %q, want %q", got, tc.wantLang)
+			}
+		})
+	}
+}
+
+// TestValidateEntryLanguages_SyntheticPathPassesSilently confirms
+// existing tests with non-existent paths (`path: ./api`) keep working —
+// no warn, no error, Language stays empty.
+func TestValidateEntryLanguages_SyntheticPathPassesSilently(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "caravan.yaml")
+	yamlBody := `name: x
+default_target: t
+entries:
+  api:
+    path: ./nonexistent-svc
+targets:
+  t: { runtime: docker-compose }
+`
+	if err := os.WriteFile(path, []byte(yamlBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, diag, err := CompileFile(path)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if diag.HasErrors() {
+		buf := &bytes.Buffer{}
+		_, _ = diag.WriteTo(buf)
+		t.Fatalf("unexpected errors:\n%s", buf.String())
+	}
+	if plan == nil {
+		t.Fatal("nil plan")
+	}
+	if plan.Entries["api"].Language != "" {
+		t.Errorf("Language: got %q, want empty (synthetic path)", plan.Entries["api"].Language)
 	}
 }
 

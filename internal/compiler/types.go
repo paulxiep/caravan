@@ -18,11 +18,24 @@ type Span struct {
 type Plan struct {
 	Name          string               `json:"name"`
 	DefaultTarget string               `json:"default_target,omitempty"`
+	// OutputDir is the per-target write root. `caravan compile
+	// --target=<t>` writes its artifacts under <OutputDir>/<t>/generated/.
+	// Yaml field: `output_dir`. Defaults at phase 3 (Normalize) to
+	// "caravan-out" so the generated tree is namespaced and unlikely to
+	// collide with a hand-authored `infra/` the user already owns.
+	// Existing repos that want to keep the previous layout set
+	// `output_dir: infra` explicitly.
+	OutputDir     string               `json:"output_dir,omitempty"`
 	Entries       map[string]*Entry    `json:"entries,omitempty"`
 	Seams         map[string]*Seam     `json:"seams,omitempty"`
 	Resources     map[string]*Resource `json:"resources,omitempty"`
 	Secrets       map[string]*Secret   `json:"secrets,omitempty"`
 	Targets       map[string]*Target   `json:"targets,omitempty"`
+	// PatchedManifests lists per-target build-context manifest files
+	// (e.g. requirements.txt) written by phase-5 emit/manifest.go. Empty
+	// until EmitManifestPatches runs. Surfaced so the CLI can log what
+	// it wrote alongside the compose override.
+	PatchedManifests []string `json:"patched_manifests,omitempty"`
 }
 
 // Entry is a top-level deploy unit — a service the user runs.
@@ -51,7 +64,13 @@ type Entry struct {
 	EnvFile  string    `json:"env_file,omitempty"`
 	Triggers []Trigger `json:"triggers,omitempty"`
 	Uses     []string  `json:"uses,omitempty"`
-	Span     Span      `json:"-"`
+	// Language is detected at phase-3 (Normalize) from the manifest
+	// files present in Path: Cargo.toml → rust, pyproject.toml or
+	// requirements.txt → python. Empty until validateEntryLanguages
+	// runs; warns rather than errors when Path doesn't exist on disk
+	// (test fixtures use synthetic paths).
+	Language Language `json:"language,omitempty"`
+	Span     Span     `json:"-"`
 }
 
 // Seam is a same-language synchronous abstraction boundary inside an
@@ -123,8 +142,23 @@ type Resource struct {
 	Name        string          `json:"name"`
 	Type        ResourceKind    `json:"type"`
 	Composition CompositionMode `json:"composition,omitempty"`
-	// Extra carries type-specific fields (e.g. llm.task=chat). Kept
-	// as a raw map at the IR level; the emitter validates per-type.
+	// Variant picks the concrete OSS-local container choice for this
+	// resource (e.g. queue → redis-streams vs rabbitmq). Empty means
+	// "use the default variant for this resource type", which the
+	// emit/resources.go catalog resolves at phase 5.
+	Variant ResourceVariant `json:"kind,omitempty"`
+	// User, Password, DBName carry explicit credentials / DB name for
+	// resource kinds that need them (db.sql today; future bucket etc.).
+	// Empty falls through to caravan-managed defaults; declaring them
+	// in yaml makes the IR the single source of truth so neither the
+	// user nor the compiler has to "guess" each other's defaults when a
+	// hand-authored compose ships the engine container.
+	User     string `json:"user,omitempty"`
+	Password string `json:"password,omitempty"`
+	DBName   string `json:"dbname,omitempty"`
+	// Extra carries type-specific fields beyond type / composition /
+	// kind (e.g. llm.task=chat). Kept as a raw map at the IR level;
+	// the emitter validates per-type.
 	Extra map[string]any `json:"extra,omitempty"`
 	Span  Span           `json:"-"`
 }
@@ -147,23 +181,74 @@ type Target struct {
 	Region             string                       `json:"region,omitempty"`
 	Entries            map[string]EntryDispatchMode `json:"entries,omitempty"`
 	Seams              map[string]SeamDispatchMode  `json:"seams,omitempty"`
-	// Composition overrides per resource (resource-name → mode).
-	Composition map[string]CompositionMode `json:"composition,omitempty"`
-	Span        Span                       `json:"-"`
+	// Composition overrides per resource (resource-name → override).
+	// Yaml accepts both scalar (`oss-local`) and object (`{ mode:
+	// oss-local, kind: rabbitmq }`) form; both parse into the same
+	// CompositionOverride. Empty fields fall through to the resource's
+	// own declaration / target default / variant default at resolve.
+	Composition map[string]*CompositionOverride `json:"composition,omitempty"`
+	Span        Span                            `json:"-"`
+}
+
+// CompositionOverride is one target's per-resource override. Either
+// or both fields may be empty; resolve.go layers it on top of the
+// resource's own Composition + Variant fields.
+type CompositionOverride struct {
+	Mode    CompositionMode `json:"mode,omitempty"`
+	Variant ResourceVariant `json:"kind,omitempty"`
+	Span    Span            `json:"-"`
 }
 
 // ResolvedPlan is produced by phase 4 (Resolve). It carries the input
 // Plan + computed env vars per deploy unit. M0 emits CARAVAN_RPC_PEERS
-// only; IAM, networking, and secret resolution are deferred (M4-cloud / M7).
+// only; M4 (Phase 1) adds resource resolution + per-consumer endpoint
+// env vars (DATABASE_URL, REDIS_URL, etc.). IAM, networking, and
+// secret resolution stay deferred (M4-cloud / M7).
 type ResolvedPlan struct {
 	Plan       *Plan                        `json:"plan"`
 	TargetName string                       `json:"target"`
-	EnvVars    map[string]map[string]string `json:"env_vars"`
+	// EnvVars carries the SDK-control-plane env vars per deploy unit
+	// (CARAVAN_RPC_PEERS, etc.). Source = seam dispatch.
+	EnvVars map[string]map[string]string `json:"env_vars"`
+	// PeersJSON is the single marshaled CARAVAN_RPC_PEERS view shared
+	// across every member of every seam-owning unit (entries + their
+	// peer containers). Same value that lands in EnvVars[<entry>]
+	// for seam-using entries; surfaced as a top-level field so peer
+	// service emit can read it without re-scanning.
+	PeersJSON string `json:"peers_json,omitempty"`
 	// PeerTables is the per-deploy-unit CARAVAN_RPC_PEERS *map* before
 	// JSON-stringification. Useful for callers (emitter, tests) that
 	// want structured access; EnvVars contains the stringified form
 	// that gets injected at runtime.
 	PeerTables map[string]map[string]PeerEntry `json:"peer_tables"`
+	// ResolvedResources carries each resource's resolved Composition +
+	// Variant for this target (per-target overrides merged in). Keyed
+	// by resource name. Empty when the plan declares no resources.
+	ResolvedResources map[string]*ResolvedResource `json:"resolved_resources,omitempty"`
+	// ResourceEnvVars carries the resource-endpoint env vars to inject
+	// per consumer entry (`DATABASE_URL`, `REDIS_URL`, `S3_ENDPOINT_URL`,
+	// etc.). Keyed by consumer entry name → env var name → value.
+	// Source = resource composition. The emit-phase compose accumulator
+	// (post-M3 refactor) tags these with SourceResource so they merge
+	// deterministically with SourceSeam (CARAVAN_RPC_*) keys.
+	ResourceEnvVars map[string]map[string]string `json:"resource_env_vars,omitempty"`
+}
+
+// ResolvedResource is one resource's per-target resolved shape. Carries
+// the effective Composition + Variant after layering per-target overrides
+// on top of the resource's own declaration and applying type-defaults.
+type ResolvedResource struct {
+	Name        string          `json:"name"`
+	Type        ResourceKind    `json:"type"`
+	Composition CompositionMode `json:"composition"`
+	Variant     ResourceVariant `json:"variant"`
+	// User, Password, DBName carry the resolved credentials threaded
+	// from the user-declared Resource.{User,Password,DBName}. Empty
+	// when not declared; the endpoint emitter falls back to caravan
+	// defaults in that case.
+	User     string `json:"user,omitempty"`
+	Password string `json:"password,omitempty"`
+	DBName   string `json:"dbname,omitempty"`
 }
 
 // PeerEntry is one row in CARAVAN_RPC_PEERS — interface-name keyed.
