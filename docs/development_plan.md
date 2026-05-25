@@ -725,49 +725,126 @@ Key M6 decisions:
 
 ## Phase 2 — Cloud (start only after M9 Phase 1 close is green)
 
-Cloud milestones land after Phase 1 is fully validated. Strongly descope-able as a group: if compose-only validation is sufficient evidence for your audience (PoC review, design doc, hiring portfolio), Phase 2 is skippable. Estimate: ~10 sessions if all three Phase-2 milestones land.
+Cloud milestones land after Phase 1 is fully validated. Strongly descope-able as a group: if compose-only validation is sufficient evidence for your audience (PoC review, design doc, hiring portfolio), Phase 2 is skippable. Estimate: ~13–14 sessions if all Phase-2 milestones land (M8 dropped per descope ladder).
 
-### M4-cloud — HCL emit + AWS resource provisioning (Phase 2, 3–4 sessions)
+**Re-scoped 2026-05-22** — Phase 2 split into hybrid-first / Fargate-first / Lambda-on-two-seams progression with an explicit AWS-onboarding prereq. Replaces the earlier monolithic M4-cloud + M7 + M8 + M9-cloud framing.
 
-**Demo.** Same code from M4, with `composition.uploads: cloud-managed`. `caravan compile --target=prod` emits HCL via `hclwrite`; `tofu plan` is human-reviewable; `tofu apply` provisions `aws_s3_bucket` + IAM policy. Same Rust/Python code that talked to MinIO in M4 now talks to real S3.
+### M4-cloud-prereq — AWS account bootstrap (Phase 2, 1 session, no caravan code)
+
+**Demo.** Verified-working AWS account state: `aws sts get-caller-identity --profile caravan-poc` returns the IAM user ARN; `tofu init` against the new state backend succeeds; AWS Budgets shows the spending cap.
 
 **Prereqs.** M9 (Phase 1 close).
 
-**Work.** First HCL emitter via `hclwrite`. HCL-side resource emitters for the groups M5/M6 needed: `bucket` (`aws_s3_bucket`), `search` (`aws_opensearch_domain` or referenced ARN), `db.sql` (`aws_rds_instance`), `cache` (`aws_elasticache_cluster`), `queue` (`aws_sqs_queue`). IAM grants computed per `uses:` declarations.
+**Work** (AWS Console + shell, not in Caravan repo):
+- IAM user with programmatic access + MFA; root locked with MFA only.
+- AWS CLI install + `aws configure --profile caravan-poc`.
+- Billing alarm at $20/mo; AWS Budgets hard cap at $50/mo. Critical because zero personal-AWS spend history means a config bug can run up cost (OpenSearch alone is ~$25/mo idle).
+- S3 bucket + DynamoDB lock table for Terraform state backend (one-shot pre-create; chicken-and-egg-bootstrapped, doc-only).
+- ECR repositories (one per image: `code-rag-chat`, `invoice-parse-processing`, `invoice-parse-processing-slim`, etc.).
+- OpenTofu install.
 
-**Risk.** Terraform state backend bootstrapping. Mitigate by separating `caravan compile` (HCL on disk; gates this milestone) from `caravan up` (tofu apply; manual on first run).
+**Output.** `docs/aws_onboarding_checklist.md` — operational checklist + state-backend bucket/table names + ECR registry URIs, committed once and treated as user-side ground truth.
 
-### M7 — Lambda dispatch works for one seam (Phase 2, 3–4 sessions)
+**Why split out.** AWS-from-scratch is ~1 focused session; folding it into M4-cloud session 1 hides the cost and conflates ops with compiler work.
 
-**Demo.** `caravan compile --target=prod-mixed && caravan up` on either repo, where yaml sets one seam to `lambda`. The caller still uses `client(X)`; SDK detects lambda from `CARAVAN_RPC_PEERS` and SigV4-signs a POST to the Lambda Function URL.
+### M4-cloud — HCL emit + AWS resource provisioning (Phase 2, hybrid only, 3 sessions)
+
+**Demo.** `caravan compile --target=hybrid-dev` emits HCL for the resource layer (S3 + RDS + SQS + ElastiCache); `tofu plan` is human-reviewable; `tofu apply` provisions them. Same Python/Rust code that talked to MinIO in M4 now talks to real S3 from a compose target with `creds_passthrough: true` (mounts `~/.aws`). **No cloud compute yet** — local processes, real cloud resources.
+
+**Prereqs.** M4-cloud-prereq.
+
+**Work.**
+- First HCL emitter via `hclwrite` (Go module). New package `internal/compiler/emit/hcl/`.
+- Resource emitters: `bucket` → `aws_s3_bucket`, `db.sql` → `aws_db_instance`, `queue` → `aws_sqs_queue`, `cache` → `aws_elasticache_cluster`.
+- `search` group → emit `aws_opensearch_domain` only when actually used by an entry's `uses:`; otherwise omit (cost guard — OpenSearch is the heaviest resource).
+- IAM grants computed per `uses:` declarations (re-use existing Plan IR).
+- New compose runtime variant: `runtime: docker-compose-cloud-hybrid` — same compose emit but injects real AWS env vars and mounts `~/.aws`.
+- HCL backend config: `backend "s3" { ... }` referencing the M4-cloud-prereq state bucket.
+
+**Acceptance.**
+- `caravan compile --target=hybrid-dev` writes reviewable HCL into `infra/hybrid-dev/generated/main.tf`.
+- `tofu plan` is human-reviewable; `tofu apply` provisions resources successfully.
+- invoice-parse's `processing` service from compose writes to real S3, reads from real RDS, publishes to real SQS.
+
+**Risk.** OpenSearch domains are 20+ minutes to provision. Mitigate by gating emit on actual use; default tier `dev` (smallest instance).
+
+### M4b — First Fargate placement (Phase 2, 3–4 sessions)
+
+**Demo.** `caravan compile --target=staging-fargate && caravan up` runs invoice-parse's `processing` entry as a Fargate task. ECR push automated. Resources from M4-cloud still apply.
 
 **Prereqs.** M4-cloud.
 
 **Work.**
-- SDK: `lambda` dispatch mode in Rust client (SigV4 via `aws-sigv4` crate). Server side: detect `AWS_LAMBDA_RUNTIME_API` and register Lambda handler instead of axum.
-- Phase 5: `aws_lambda_function` + Function URL (`AuthType: AWS_IAM`) + per-caller `lambda:InvokeFunctionUrl` IAM grant.
+- VPC + subnets (2 AZs) + IGW + single NAT (flag `nat: ha` as v1.1).
+- ECR repo + push automation: `caravan up` runs `docker build` + `aws ecr get-login-password | docker login` + tag + push **before** `tofu apply`.
+- Fargate task def + service + internal ALB OR Cloud Map service discovery (per D11 gate — Cloud Map recommended).
+- Decision gate: pin `caravan up` workflow (`tofu apply -auto-approve` wrap vs print-only — per D10).
 
-**Risk.** SigV4 signing edge cases; cold-start tax may make tests flaky. Do it by hand once (curl + aws-vault) before automating.
+**Acceptance.**
+- invoice-parse `processing` runs on Fargate, consumes from SQS, writes to S3.
+- Source code unchanged from compose target — yaml flip only.
+- `aws ecs describe-tasks` shows the task in steady state.
 
-**Decision gates before M7.** Pin `caravan up` workflow (wrap `tofu apply -auto-approve` vs print-only). Pin Fargate-Fargate RPC mechanism (Cloud Map recommended).
+**Risk.** ECR push timing vs Fargate task def creation (task def needs image URI). Mitigate by emit-then-apply with image push sandwiched: `caravan compile` → `caravan push-images` → `tofu apply`.
 
-**Descope.** Fargate-only if M5/M6 ran long; skip Lambda dispatch entirely.
+### M7 — Lambda dispatch on two seams, Rust + Python (Phase 2, 3–4 sessions)
 
-### M8 — Batch placement works for one entry (Phase 2, 2–3 sessions, strong descope candidate)
+**Demo.** Two seams flip to `lambda` mode across two languages:
+- **Rust:** code-rag `IntentClassifier` carved from `code-rag-engine::intent`. Pure CPU, sub-second cold start.
+- **Python:** invoice-parse `ValidateExtraction` carved from `validate_extraction()` at `services/processing/invoice_processing/validation.py:195`. Pure transforms, ~10MB slim image (no PaddleOCR/torch).
 
-**Demo.** `entries.code-raptor: batch` in a code-rag target; `caravan up` provisions AWS Batch; the job ingests one repo and writes embeddings to S3.
+Same source, yaml flip per seam. SigV4-signed POST to Function URL with `AuthType: AWS_IAM`. Mirrors Phase 1's two-language per-seam-mode proof, now on Lambda.
+
+**Prereqs.** M4b.
+
+**Work — SDK side.**
+- Rust SDK: `lambda` dispatch mode via `aws-sigv4` crate. Lambda runtime detection via `AWS_LAMBDA_RUNTIME_API`; register Lambda handler instead of axum (composes with existing `run_or_serve`).
+- Python SDK: SigV4 via `botocore.auth.SigV4Auth`. Lambda detection via `AWS_LAMBDA_FUNCTION_NAME`; handler entry at `caravan_rpc.lambda_handler`.
+- **Auth split**: `mode: lambda` uses SigV4 only (no bearer); `mode: http` keeps bearer. Emitter omits `CARAVAN_RPC_SHARED_SECRET` from Lambda env vars.
+
+**Work — Compiler side.**
+- HCL emit: `aws_lambda_function` (container-image source) + Function URL + per-caller `lambda:InvokeFunctionUrl` IAM grant.
+- New compose target variant: `lambda-mixed` so consumers can run locally and dispatch into real Lambda for incremental testing.
+
+**Work — code-rag refactor (IntentClassifier seam).**
+- Add `#[wagon] pub trait IntentClassifier` in `crates/code-rag-store/src/seams.rs` (mirroring the 4 existing seams).
+- Wrap existing `code_rag_engine::intent::IntentClassifier` struct in `LocalIntentClassifier` impl of the trait (non-WASM location — likely `code-rag-core::intent_local` or similar).
+- Feature-gate so `code-rag-engine` WASM build (`standalone_api.rs`) keeps calling the concrete struct directly; only the server path goes through the seam.
+- Flip server call sites: `src/api/handlers.rs:32-40` and `crates/code-rag-core/src/retriever.rs` (intent call sites identified in M7 prep exploration).
+- Register via `caravan_rpc::provide::<dyn IntentClassifier>(...)` in `code-rag-core/src/state.rs`.
+
+**Work — invoice-parse refactor (ValidateExtraction seam).**
+- Wrap `validate_extraction()` in `@wagon class ValidateExtraction` at `services/processing/invoice_processing/validation.py:195`.
+- Register `provide(ValidateExtraction, ValidateExtractionImpl())` in `worker.py` alongside existing provides.
+- Flip call site in `worker.py:205` from `validate_extraction(...)` to `client(ValidateExtraction).validate(...)`.
+- Add slim Docker build target in `services/processing/Dockerfile` excluding PaddleOCR/torch — ~10MB image footprint for the Lambda peer (vs 200MB+ for the OCR-bearing one).
+
+**Acceptance.**
+- `caravan compile --target=prod-mixed` emits two Lambda functions + IAM + Function URLs.
+- code-rag chat query routes intent classification through Lambda; same chunk_ids as Fargate path (byte-identical).
+- invoice-parse processing routes ValidateExtraction through Lambda; same ValidationResult as inproc path.
+- Cold-start latency observable in CloudWatch logs <2s for both Lambda functions.
+- `git diff -- crates/ src/ services/` empty between the Fargate-only and Lambda-mixed targets.
+
+**Risk.** Per-seam slim image flavor may require a yaml schema extension (`seams.X.image_target:` for Dockerfile multi-stage selection). Mitigate via a `slim` build-target convention if the compiler shouldn't grow yaml surface.
+
+**Decision gate before M7.** Shared-secret-vs-SigV4 strategy — SigV4-only for lambda mode; bearer stays for http mode (recommend).
+
+### M8 — Batch placement (DESCOPED)
+
+Dropped per descope ladder #2. AWS Batch is the heaviest emitter for the thinnest demo; code-raptor can run as a one-off `docker run` against real S3 if needed.
+
+### M9-cloud — Phase 2 close: 8 conditions across compose × Fargate × Lambda (2 sessions)
+
+**Demo.** Re-run M9's 8-condition testability matrix across compose × Fargate × Lambda for both repos. All 8 green across all cells. The full thesis claim — "yaml flips dispatch across packaging × placement × composition" — empirically proven on both compose and AWS.
 
 **Prereqs.** M7.
 
-**Why descopable.** Batch is the heaviest emitter for the thinnest demo. code-raptor can run as a one-off `docker run` and still demonstrate ingestion.
-
-### M9-cloud — Phase 2 close: same 8 conditions across AWS targets (2 sessions)
-
-**Demo.** Re-run M9's testability matrix against AWS targets (Fargate, Lambda). All 8 conditions green across compose AND cloud per-seam-mode combinations. The full thesis claim — "yaml flips dispatch across packaging × placement × composition" — is now empirically proven on both compose and AWS.
-
-**Prereqs.** M7; M4-cloud.
-
-**Work.** Extend M9's E2E harness to drive `caravan up` to AWS. Golden HCL files. AWS cost-budget guard in CI.
+**Work.**
+- Extend M9 E2E harness to drive `caravan up` to AWS targets.
+- Golden HCL files (`internal/compiler/emit/hcl/testdata/golden/<target>/*.tf`).
+- AWS cost-budget guard in CI: pre-deploy check via AWS Budgets API; fail if monthly forecast exceeds threshold.
+- Teardown automation: `caravan down --target=X` runs `tofu destroy` for sweep at end of CI runs. M4-cloud-prereq state backend persists; per-target resources don't.
 
 ---
 
@@ -805,18 +882,20 @@ Cloud milestones land after Phase 1 is fully validated. Strongly descope-able as
 
                   ════════════════ Phase 2 — AWS ═════════════════
 
-                              M4-cloud (HCL emit + AWS resources)
+                       M4-cloud-prereq (AWS account bootstrap)
                                        ↓
-                              M7 (Lambda dispatch)
+                       M4-cloud (HCL emit, hybrid only — local compute + real AWS resources)
                                        ↓
-                              M8 (Batch — strong descope candidate)
+                              M4b (first Fargate placement)
                                        ↓
-                          M9-cloud (8 conditions across AWS)
+                       M7 (Lambda dispatch on TWO seams: Rust intent + Python validate)
+                                       ↓
+                       M9-cloud (8 conditions × 2 repos × compose+Fargate+Lambda)
 ```
 
 **Phase 1 critical path:** B0 → M0 → M1 → M2 → M5 → M9 (or via M6). Phase 1 alone proves the thesis.
 
-**Phase 2 critical path:** M9 (gate) → M4-cloud → M7 → M9-cloud.
+**Phase 2 critical path:** M9 (gate) → M4-cloud-prereq → M4-cloud → M4b → M7 → M9-cloud. (M8 dropped per descope ladder #2.)
 
 **Parallelizable pairs:** B0 ∥ B0p (different repo + language; only milestone explicitly parallel). M3 ∥ M4. M5 ∥ M6.
 
@@ -832,11 +911,12 @@ Approximately 30 focused sessions split across two phases.
 - Sessions 14–20: **M3 → M6**. Resource composition (compose-only), both repos fully Caravan-ified.
 - Sessions 21–22: **M9**. Phase 1 closes — 8 conditions green on both repos via compose.
 
-**Phase 2 — AWS (~10 sessions, optional):**
-- Sessions 23–26: **M4-cloud**. HCL emitter + AWS resource emitters.
-- Sessions 27–30: **M7**. Lambda dispatch on one seam.
-- Sessions 31–32: **M8**. Batch placement (strong descope candidate; can skip entirely).
-- Sessions 33–34: **M9-cloud**. Phase 2 close — same 8 conditions across AWS targets.
+**Phase 2 — AWS (~13–14 sessions, optional):**
+- Session 23: **M4-cloud-prereq**. AWS account bootstrap (no caravan code; doc + ops).
+- Sessions 24–26: **M4-cloud (hybrid only)**. HCL emitter + resource emitters; local compute talks to real AWS.
+- Sessions 27–30: **M4b**. First Fargate placement (VPC, ECR push, Cloud Map).
+- Sessions 31–34: **M7**. Lambda dispatch on two seams (Rust IntentClassifier + Python ValidateExtraction); SigV4 in both SDKs.
+- Sessions 35–36: **M9-cloud**. Phase 2 close — 8 conditions across compose × Fargate × Lambda for both repos.
 
 **If the project ends at session 22 (Phase 1 done), the thesis is empirically proven** on real code via compose. Phase 2 is AWS coverage, not thesis proof. If it ends at session 5 (B0 done), the thesis is hand-proven on one real seam — already meaningful evidence.
 
@@ -844,11 +924,12 @@ Approximately 30 focused sessions split across two phases.
 
 ## Descope ladder (drop first first)
 
-1. **All of Phase 2 (M4-cloud, M7, M8, M9-cloud)**. Phase 1 alone proves the thesis on real code. Skip Phase 2 if compose-only validation suffices for your audience (PoC review, design doc, portfolio).
-2. **M8 (Batch)** if Phase 2 is happening. Heaviest emitter for thinnest demo.
+1. **All of Phase 2 (M4-cloud-prereq, M4-cloud, M4b, M7, M9-cloud)**. Phase 1 alone proves the thesis on real code. Skip Phase 2 if compose-only validation suffices for your audience (PoC review, design doc, portfolio).
+2. **M8 (Batch)** — already dropped from Phase 2 scope. Code-raptor can run as a one-off `docker run` against real S3 if needed.
 3. **M6 third seam (OCRLayout)**. Keep LLMExtraction (B0) + OCRText only.
-4. **Lambda mode in M7**. Fargate only if heavy ML seams won't tolerate cold-start.
-5. **Tier-1 manifest patching** (LLM provider feature flags) — hardcode `rig-core`'s `bedrock` feature for PoC.
+4. **M7 Python leg (ValidateExtraction)**. Rust IntentClassifier alone if Python Lambda image-flavor work runs long.
+5. **M7 entirely** — Fargate only if heavy ML seams won't tolerate cold-start. Drops the Lambda dispatch demo but keeps Fargate × hybrid-resources coverage.
+6. **Tier-1 manifest patching** (LLM provider feature flags) — hardcode `rig-core`'s `bedrock` feature for PoC.
 
 **Cannot descope:** B0 (the lived spec proof). M2 (Rust SDK + thesis flip in a second language). At least one of M5/M6 (real codebase validates SDK). At least one of M3/M4 (orthogonality of language or composition). M9 Phase 1 close (otherwise nothing is verified).
 
@@ -865,8 +946,13 @@ From [open_decisions.md](open_decisions.md). Each must be ratified before its mi
 | M2 | Rust SDK HTTP server | axum |
 | M2 | Shared-secret strategy (D7) | Compiler-emitted hex (option A) |
 | M4 | Manifest-patch conflict policy (D9) | Error on version mismatch |
-| M7 | `caravan up` workflow (D10) | Wrap `tofu apply -auto-approve` |
-| M7 | Fargate-Fargate RPC mechanism (D11) | Cloud Map (cheaper than ALB) |
+| M4-cloud-prereq | AWS region pin (state backend + ECR + resources) | `ap-southeast-1` (Singapore) — Bangkok-operator latency optimum; verify Bedrock model catalog before pin. User choice, ratified in checklist. |
+| M4-cloud | Terraform state backend strategy | User-precreated S3+DynamoDB (doc-only one-shot; chicken-and-egg-bootstrapped) |
+| M4-cloud | Storage permanence vocabulary | Already in IR — `composition: by-id` (pre-created) + `composition: cloud-managed` (HCL-emitted) |
+| M4b | `caravan up` workflow (D10) | Wrap `tofu apply -auto-approve` after `caravan push-images` step |
+| M4b | Fargate-Fargate RPC mechanism (D11) | Cloud Map (cheaper than ALB) |
+| M7 | Auth split lambda vs http (D7 extension) | SigV4-only for `mode: lambda`; bearer for `mode: http`; emitter omits `CARAVAN_RPC_SHARED_SECRET` from Lambda env |
+| M7 | Slim image flavor for Python Lambda | `slim` Dockerfile build-target convention (no yaml schema growth) |
 
 ---
 
@@ -881,8 +967,10 @@ From [poc_yaml_spec.md](poc_yaml_spec.md) §Testability.
 - **All 8 on both repos across mixed per-seam-mode combinations via compose: M9 (Phase 1 close).**
 
 **Phase 2 (AWS) extension:**
-- Conditions 5, 6 re-validated against AWS (Lambda + Fargate) targets at M9-cloud.
-- **All 8 across compose × AWS per-seam-mode combinations: M9-cloud (Phase 2 close).**
+- Conditions 5, 6 re-validated against AWS resource layer at M4-cloud (hybrid: local compute → real S3/RDS/SQS).
+- Conditions 5, 6 re-validated against Fargate at M4b.
+- Conditions 5, 6 re-validated against Lambda (both Rust IntentClassifier and Python ValidateExtraction) at M7.
+- **All 8 across compose × Fargate × Lambda per-seam-mode combinations: M9-cloud (Phase 2 close).**
 
 ---
 
@@ -899,10 +987,11 @@ From [poc_yaml_spec.md](poc_yaml_spec.md) §Testability.
 - **M9 (Phase 1 close)**: CI matrix green on compose for both repos. No AWS yet.
 
 **Phase 2:**
-- **M4-cloud**: `aws s3 ls` shows real bucket written to by the same code that wrote to MinIO at M4. `tofu plan` reviewable.
-- **M7**: CloudWatch logs from Lambda show dispatch lines.
-- **M8**: AWS Batch job ingests one repo and writes embeddings to S3 successfully.
-- **M9-cloud (Phase 2 close)**: CI matrix green on compose AND AWS for both repos.
+- **M4-cloud-prereq**: `aws sts get-caller-identity --profile caravan-poc` returns the IAM user ARN; `tofu init` against the new state backend completes; AWS Budgets shows the spending cap.
+- **M4-cloud**: `caravan compile --target=hybrid-dev` writes reviewable HCL; `tofu apply` provisions S3+RDS+SQS+cache; invoice-parse compose run writes a real invoice to real S3 and reads from RDS.
+- **M4b**: `caravan up --target=staging-fargate` succeeds end-to-end including ECR push; `aws ecs describe-tasks` shows the task in steady state; source diff between hybrid-dev and staging-fargate runs is empty.
+- **M7**: code-rag `/chat` against `prod-mixed` returns byte-identical chunk_ids to `dev-monolith`; invoice-parse PDF job processed through Fargate-→Lambda-→Fargate producing the expected Excel; CloudWatch shows IntentClassifier (Rust) and ValidateExtraction (Python) Lambda invocations.
+- **M9-cloud (Phase 2 close)**: 8 conditions × 2 repos × (compose + Fargate + Lambda) matrix all green. AWS Budgets check passes; `tofu destroy` sweeps per-target resources at run end; state backend persists.
 
 ---
 

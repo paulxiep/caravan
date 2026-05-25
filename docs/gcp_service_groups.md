@@ -1,5 +1,7 @@
 # GCP Service Role Groups — Scale, Latency, Cost
 
+> ℹ️ **REFERENCE DATA — snapshot 2026-05-16; GCP is out of PoC scope.** PoC is AWS-only per [`development_plan.md`](development_plan.md); this catalogue exists for thesis-completeness ("cloud-agnostic primitives survive non-AWS providers"). Re-verify on the GCP Pricing Calculator before quoting in any current decision.
+
 > **Snapshot date: 2026-05-16. Prices in us-central1 USD unless noted. Re-verify on the GCP Pricing Calculator before quoting in a decision doc.**
 >
 > **Sources**: numbers come from training data through Jan 2026 plus targeted web verification (2026-05-16) for the most volatile services: Vertex AI Gemini 2.5 (Pro / Flash / Flash-Lite / Nano) per-token pricing, Anthropic Claude on Vertex per-token (cross-checked against Bedrock pricing in `aws_service_groups.md` — Anthropic's published prices are uniform across providers; Vertex applies no markup), BigQuery Editions slot pricing (Standard / Enterprise / Enterprise Plus, post-2024 model change), AlloyDB Standard vs Columnar Engine, Spanner per-PU pricing (post the 100-PU minimum change), Cloud Run Gen2 CPU/memory rates, Memorystore for Valkey (newer SKU). Older / stable services (Compute Engine, GCS, Cloud SQL, Pub/Sub, Persistent Disk, Filestore) are not web-re-verified for this snapshot.

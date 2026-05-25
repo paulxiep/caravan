@@ -1,5 +1,7 @@
 # Azure Service Role Groups — Scale, Latency, Cost
 
+> ℹ️ **REFERENCE DATA — snapshot 2026-05-16; Azure is out of PoC scope.** PoC is AWS-only per [`development_plan.md`](development_plan.md); this catalogue exists for thesis-completeness ("cloud-agnostic primitives survive non-AWS providers"). Re-verify on the Azure Pricing Calculator before quoting in any current decision.
+
 > **Snapshot date: 2026-05-16. Prices in `eastus` USD unless noted. Re-verify on the Azure Pricing Calculator before quoting in a decision doc.**
 >
 > **Sources**: numbers come from training data through Jan 2026 plus targeted web verification (2026-05-16) for the most volatile services: Azure OpenAI per-token pricing (Foundry Models direct + GPT-4o / o3 / o4-mini families verified against `azure.microsoft.com/en-us/pricing/details/azure-openai/` and `learn.microsoft.com/azure/foundry/foundry-models`), Cosmos DB serverless RU rate and autoscale 50% premium, Container Apps Consumption per-second vCPU/GiB pricing and idle-rate split, Microsoft Fabric F-SKU per-CU-hour pricing, AI Search Standard tier + semantic ranker per-1k-query pricing, Front Door Standard vs Premium per-GB egress and per-10k-request pricing, Postgres Flexible Server burstable + general-purpose SKU rates, Azure SQL Database serverless vCore-second rate ($0.000145/vCore-s ≈ $0.5218/vCore-hr) and auto-pause behavior. Older / stable services (general VMs, Blob Hot, Azure Files Standard, Service Bus Standard) are not web-re-verified for this snapshot.

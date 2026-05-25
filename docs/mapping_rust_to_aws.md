@@ -1,5 +1,7 @@
 # Rust Stack → AWS Mapping
 
+> ⚠️ **HISTORICAL — pre-SDK research notes.** Current SDK contract lives at [`../rpc/rust/`](../rpc/rust/) (caravan-rpc + caravan-rpc-macros at 0.1.0). Authoritative docs are [`thesis.md`](thesis.md) and [`development_plan.md`](development_plan.md). Snapshot 2026-05-16; do not assume any specific row is current.
+
 > **Snapshot date: 2026-05-16.** AWS prices reference `aws_service_groups.md`.
 > **Scope**: Rust ecosystem only. Pragmatic Rust-first — components without a mature Rust client are out of scope for this round (e.g., Spark-based ETL stays Python).
 

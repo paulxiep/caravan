@@ -1,5 +1,7 @@
 # caravan Abstraction Recommendation — v4 (four-language re-derivation)
 
+> ⚠️ **HISTORICAL — superseded.** This is the long-form derivation that produced the thesis. Current authoritative docs are [`thesis.md`](thesis.md) (general goal) and [`development_plan.md`](development_plan.md) (operational truth). Read this only for archeology of how the design was arrived at; do not infer current decisions from it. Pre-dates the entries+seams reframing of 2026-05-17.
+
 > **Snapshot date: 2026-05-16.** Derived independently from the business requirements below, drawing evidence from `aws_service_groups.md`, `mapping_aws_to_python.md`, `mapping_python_to_aws.md`, `python_api_diffs.md`, `mapping_aws_to_rust.md`, `mapping_rust_to_aws.md`, `rust_api_diffs.md`, `mapping_aws_to_typescript.md`, `mapping_typescript_to_aws.md`, `typescript_api_diffs.md`, **and the newly added `mapping_aws_to_go.md`, `mapping_go_to_aws.md`, `go_api_diffs.md`**.
 >
 > **Read `thesis.md` first** for the crystallized framing. This file is the long-form derivation that produced it — primitive shapes, yaml schema, IaC choice, roadmap, gotchas. The thesis is load-bearing; specifics in this file are current evaluation and may shift.

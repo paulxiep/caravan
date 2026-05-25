@@ -1,5 +1,7 @@
 # Python API Diffs: AWS ↔ Local Container
 
+> ⚠️ **HISTORICAL — pre-SDK research notes.** Current SDK contract lives at [`../rpc/python/`](../rpc/python/) (in-tree at 0.1.0). Authoritative docs are [`thesis.md`](thesis.md) and [`development_plan.md`](development_plan.md). Snapshot 2026-05-16; do not assume any specific row is current.
+
 > **Snapshot date: 2026-05-16.** References `aws_service_groups.md`, `mapping_python_to_aws.md`, `mapping_aws_to_python.md`.
 > **Framing**: Python ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v2.md` (long-form derivation). The difficulty bands below map onto v2's T0/T1/T2 service tiers — see the row at the bottom of the bands table.
 

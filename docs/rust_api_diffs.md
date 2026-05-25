@@ -1,5 +1,7 @@
 # Rust API Diffs: AWS ↔ Local Container
 
+> ⚠️ **HISTORICAL — pre-SDK research notes.** Current SDK contract lives at [`../rpc/rust/`](../rpc/rust/) (caravan-rpc + caravan-rpc-macros at 0.1.0). Authoritative docs are [`thesis.md`](thesis.md) and [`development_plan.md`](development_plan.md). Snapshot 2026-05-16; do not assume any specific row is current.
+
 > **Snapshot date: 2026-05-16.** References `aws_service_groups.md`, `mapping_rust_to_aws.md`, `mapping_aws_to_rust.md`.
 
 For each AWS↔local pair surfaced in the mapping files, this file shows the exact Rust code change required to switch between them and assigns a **difficulty band**:

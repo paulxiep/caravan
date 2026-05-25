@@ -1,5 +1,7 @@
 # TypeScript Stack → AWS Mapping
 
+> ⚠️ **HISTORICAL — pre-SDK research notes; TypeScript SDK is namespace-reserved only.** Current SDK namespace at [`../rpc/typescript/`](../rpc/typescript/) is a 0.0.1 placeholder; TypeScript is out of PoC scope per [`development_plan.md`](development_plan.md). Snapshot 2026-05-16; do not assume any specific row is current.
+
 > **Snapshot date: 2026-05-16.** AWS prices reference `aws_service_groups.md`.
 > **Scope**: TypeScript / JavaScript ecosystem (Node 22 + Bun, with Deno as container-baseline). Python and Rust mirrors live in `mapping_python_to_aws.md` / `mapping_rust_to_aws.md`.
 > **Framing**: this file is TypeScript ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v3.md` (long-form derivation; supersedes v2). The Cheapest/Production/Premium tier labels below are the **operator's intuition**; they map onto v3 §6's explicit yaml `tier:` vocabulary (`db.sql tier: dev | prod-small | prod | premium | global`, `bucket class: standard | intelligent | …`, etc.) — that mapping is shown inline per row and rolled up in the closing summary table.

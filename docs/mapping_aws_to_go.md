@@ -1,5 +1,7 @@
 # AWS → Go Stack Mapping & Emulation Quality
 
+> ⚠️ **HISTORICAL — pre-SDK research notes; Go SDK is namespace-reserved only.** Current SDK namespace at [`../rpc/go/`](../rpc/go/) is a 0.0.1 placeholder; Go is out of PoC scope per [`development_plan.md`](development_plan.md). (Note: the compiler itself is written in Go, but caravan-rpc-go is not a PoC deliverable.) Snapshot 2026-05-16; do not assume any specific row is current.
+
 > **Snapshot date: 2026-05-16.** References `aws_service_groups.md` for AWS-side detail and `mapping_go_to_aws.md` for the reverse direction.
 > **Scope**: Go ecosystem (Go 1.22+). "Wire-compatible" means *the official `aws-sdk-go-v2/service/*` package (or relevant driver) talks to a local container via a `BaseEndpoint` setting or DSN swap without code changes*. Python, Rust, and TypeScript mirrors live in `mapping_aws_to_python.md` / `mapping_aws_to_rust.md` / `mapping_aws_to_typescript.md`.
 > **Framing**: Go ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v4.md` (long-form derivation; supersedes v3). The emulation-quality bands below are **orthogonal to v4's T0/T1/T2 service tiers** — see the note after the bands table.

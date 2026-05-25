@@ -1,5 +1,7 @@
 # AWS → Python Stack Mapping & Emulation Quality
 
+> ⚠️ **HISTORICAL — pre-SDK research notes.** Current SDK contract lives at [`../rpc/python/`](../rpc/python/) (in-tree at 0.1.0). Authoritative docs are [`thesis.md`](thesis.md) and [`development_plan.md`](development_plan.md). Snapshot 2026-05-16; do not assume any specific row is current.
+
 > **Snapshot date: 2026-05-16.** References `aws_service_groups.md` for AWS-side detail and `mapping_python_to_aws.md` for the reverse direction.
 > **Scope**: Python ecosystem. "Wire-compatible" means *boto3 with `endpoint_url` (or a connection-string swap) works without code changes*. Rust mirror lives in `mapping_aws_to_rust.md`.
 > **Framing**: Python ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v2.md` (long-form derivation). The emulation-quality bands below are **orthogonal to v2's T0/T1/T2 service tiers** — see the note after the bands table.

@@ -1,5 +1,7 @@
 # Compiler Language — Go vs Rust vs TypeScript
 
+> ⚠️ **DECISION-RECORD ONLY — Go ratified at M0 (2026-05-20).** This document captured the comparison that led to the choice; the choice is now settled and the compiler is in active Go development per [`development_plan.md`](development_plan.md) §M0+. Read this only for the rationale of why Go won; don't infer current implementation choices from it.
+
 > **2026-05-16 update.** Earlier framings of this document leaned on `thesis.md:63` ("Pulumi-Go-as-CLI-internal is the next move") as a same-language argument for **Go** — since in-process Pulumi-Go embedding requires the host to be Go too. That framing is now downgraded: the Pulumi fallback is contingent at v1 and subprocess works from any language, so it's no longer a §4.1 criterion (see §4.2 — Pulumi appears as a Go-side *option*, not a requirement). The decision still lands on Go, but the rationale rests on `hclwrite` + `tfexec` + distribution + dogfooding, not on the Pulumi-embed argument. v4 §7d.7's "derived rather than open" reading was stronger than the body now supports. §5 recommendation and §5.1 flip-triggers are the authoritative view.
 
 > Three layers of analysis, each narrower than the last. Each layer filters the candidates further.

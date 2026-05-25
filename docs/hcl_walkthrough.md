@@ -1,5 +1,7 @@
 # HCL primer + worked caravan emit sample
 
+> ⚠️ **PARTIALLY STALE — HCL primer load-bearing; yaml examples use the retired `containers:` vocabulary.** The HCL syntax + emit-shape sections are still useful reference material for M4-cloud's HCL emitter work. The yaml side uses the pre-PoC `modules:` / `containers:` shape; see [poc_yaml_spec.md](poc_yaml_spec.md) for the current `entries:` / `seams:` shape. The HCL emit shape is largely yaml-agnostic, so the worked HCL output remains a reasonable target.
+
 > Companion to [poc_yaml_spec.md](poc_yaml_spec.md) (PoC) / [ir.md](ir.md) (full IR). Designed for a yaml-fluent reader who has never seen HCL — learn the syntax by reading what `caravan compile` would actually emit for the `smart-query` worked example. Two target projections shown: `prod-split` (HCL), `dev-monolith` (docker-compose).
 >
 > Annotations are the point of this document. The full files are illustrative; treat each comment as the load-bearing content and the surrounding HCL as the example.
