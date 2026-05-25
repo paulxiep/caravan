@@ -747,26 +747,45 @@ Cloud milestones land after Phase 1 is fully validated. Strongly descope-able as
 
 **Why split out.** AWS-from-scratch is ~1 focused session; folding it into M4-cloud session 1 hides the cost and conflates ops with compiler work.
 
-### M4-cloud — HCL emit + AWS resource provisioning (Phase 2, hybrid only, 3 sessions)
+### M4-cloud — HCL emit + AWS resource provisioning (Phase 2, hybrid only, 3 sessions) — ✅ landed 2026-05-25
 
 **Demo.** `caravan compile --target=hybrid-dev` emits HCL for the resource layer (S3 + RDS + SQS + ElastiCache); `tofu plan` is human-reviewable; `tofu apply` provisions them. Same Python/Rust code that talked to MinIO in M4 now talks to real S3 from a compose target with `creds_passthrough: true` (mounts `~/.aws`). **No cloud compute yet** — local processes, real cloud resources.
 
 **Prereqs.** M4-cloud-prereq.
 
-**Work.**
-- First HCL emitter via `hclwrite` (Go module). New package `internal/compiler/emit/hcl/`.
-- Resource emitters: `bucket` → `aws_s3_bucket`, `db.sql` → `aws_db_instance`, `queue` → `aws_sqs_queue`, `cache` → `aws_elasticache_cluster`.
-- `search` group → emit `aws_opensearch_domain` only when actually used by an entry's `uses:`; otherwise omit (cost guard — OpenSearch is the heaviest resource).
-- IAM grants computed per `uses:` declarations (re-use existing Plan IR).
-- New compose runtime variant: `runtime: docker-compose-cloud-hybrid` — same compose emit but injects real AWS env vars and mounts `~/.aws`.
-- HCL backend config: `backend "s3" { ... }` referencing the M4-cloud-prereq state bucket.
+**Status — done (2026-05-25, `implement-cloud-poc` branch).** Closes the resolve.go IAM-grant TODO and lands the first cloud emitter end-to-end.
 
-**Acceptance.**
-- `caravan compile --target=hybrid-dev` writes reviewable HCL into `infra/hybrid-dev/generated/main.tf`.
-- `tofu plan` is human-reviewable; `tofu apply` provisions resources successfully.
-- invoice-parse's `processing` service from compose writes to real S3, reads from real RDS, publishes to real SQS.
+Caravan compiler additions:
+- ✅ HCL emitter package `internal/compiler/emit/hcl/` (`hclwrite` + cty). Per-resource emitters for `bucket` → `aws_s3_bucket`, `db.sql` → `aws_db_instance`, `queue` → `aws_sqs_queue`, `cache` → `aws_elasticache_cluster`, `search` → `aws_opensearch_domain` (gated on actual `uses:` to dodge OpenSearch's 20+ min provisioning + ~$25/mo idle).
+- ✅ Target IR extensions: kept `runtime: docker-compose` and added `creds_passthrough: bool` + `aws_profile` + `backend: { bucket, lock_table, region, key }` (replaces the dev-plan's tentative `docker-compose-cloud-hybrid` runtime — same outcome, cleaner IR; M4b reuses the cloud-managed composition without cred passthrough since Fargate task roles replace the `~/.aws` mount).
+- ✅ IAM grant resolution (`resolve_iam.go`): per-entry statements derived from `uses:` (producer perms) and `triggers:` (consumer perms), unioned for entries doing both (invoice-parse `output`). Attached to the `caravan-poc` IAM user via `aws_iam_user_policy` (M4b/M7 swap this for Fargate/Lambda roles).
+- ✅ Compose hybrid extensions: when `creds_passthrough: true`, mounts the developer's absolute `~/.aws` path into every app-profile service and injects `AWS_REGION` + `AWS_PROFILE`. Cloud-managed resources emit `${VAR}` passthroughs (S3_BUCKET, DATABASE_URL, QUEUE_URL, REDIS_URL, OPENSEARCH_URL) — the user runs `tofu output -json | jq -r '...' > .env.hybrid` once after `tofu apply`, then `docker compose --env-file .env.hybrid up`.
+- ✅ Generated artifacts (per target): `versions.tf` (provider pin `aws ~> 5.0`, `required_version >= 1.6.0`), `backend.tf` (S3 + DynamoDB), `main.tf` (provider + SG + resources + outputs), `iam.tf`, `docker-compose.override.generated.yaml`, `.env.template`, `README.md` (3-step run instructions).
+- ✅ Network reachability for VPC-only resources (RDS, ElastiCache): emits `data "http" "myip"` + a security group locked to laptop IP (dev-only; M4b introduces real VPC).
 
-**Risk.** OpenSearch domains are 20+ minutes to provision. Mitigate by gating emit on actual use; default tier `dev` (smallest instance).
+Caravan-rpc additions (resource adapters belong here, not in user repos):
+- ✅ Caravan-shipped resource adapters under `caravan_rpc.resources` (Python: `rpc/python/src/caravan_rpc/resources/`; Rust: `rpc/rust/caravan-rpc/src/resources/`). Two `@wagon`-decorated seams + concrete impls:
+  - `BlobStore` seam — `LocalFsBlobStore` (oss-local non-MinIO fallback), `S3BlobStore` (boto3 / aws-sdk-s3; serves MinIO with `S3_ENDPOINT_URL` set, real AWS without).
+  - `MessageQueue` seam — `RedisStreamQueue`, `RabbitMQQueue`, `SqsQueue` (boto3 / aws-sdk-sqs).
+- ✅ `auto_register_resources(yaml_fallback=...)` — one-line bootstrap user code calls at `main()`. Reads env vars (Caravan-injected) first, falls back to user-passed YAML config dict for non-Caravan local runs. User code never hand-writes a boto3 wrapper / SQS client / Redis client.
+- ✅ Optional dep gates: `caravan-rpc[aws|redis|rabbit]` (Python extras), `caravan-rpc { features = ["resources-aws", "resources-redis", "resources-rabbit"] }` (Rust features). The seam traits load with no extras; impls demand their backend libs at construction time.
+
+User-repo touch points (invoice-parse):
+- ✅ caravan.yaml: `invoice_blobs: { type: bucket }` declared; added to all three entries' `uses:`. New `hybrid-dev` target with `creds_passthrough: true` + `region: ap-southeast-1` + `aws_profile: caravan-poc` + `backend: { ... }` pointing at the M4-cloud-prereq state bucket.
+- ✅ Worker code (Python `services/processing/worker.py`, Rust `services/ingestion/main.rs` + `services/output/main.rs`): single `auto_register_resources(yaml_fallback=...)` call at startup; subsequent uses go through `client(BlobStore).put(...)` / `client(MessageQueue).publish(...)`. No adapter classes authored in invoice-parse — the structural ask remains exactly the three-point SDK contract.
+
+End-to-end verification:
+- ✅ All caravan tests: 28 Go tests (compiler / emit / hcl), 66 Python (caravan-rpc) + 2 skipped (boto3/redis not in dev venv), 54 Rust (caravan-rpc).
+- ✅ `caravan compile --target=dev-bootstrap` (Phase-1 regression check): emits clean compose override, no leftover adapter references.
+- ✅ `caravan compile --target=hybrid-dev`: emits HCL + compose override + env.template + README.
+- ✅ Real-AWS apply/destroy loop (account `351090596944`, ap-southeast-1, 2026-05-25): `tofu init` → `tofu plan` (7 resources, human-reviewable, no surprises) → `tofu apply` (S3 + SG + SQS + 3× IAM + RDS, 4m56s for RDS) → AWS-CLI verification (S3 listable, SQS ARN returned, RDS `available` postgres 16.13, 3 user-policies attached to caravan-poc) → `tofu destroy` clean.
+
+Deferred to later milestones:
+- ⏸️ Live `docker compose up` against the provisioned AWS resources — the resource adapter wiring is unit-tested through `auto_register_resources` + `client(BlobStore)`, but the data-plane round-trip (PDF → ingest writes real S3 + SQS → processing reads real S3 + writes real RDS + publishes real SQS → output writes real S3) is left for a Phase-2 close-out session alongside M9-cloud.
+- ⏸️ Cache + Search adapter impls in caravan-rpc (no user repo consumes cache or search yet; first real test lands at M9-cloud when code-rag enters Phase 2).
+- ⏸️ DB-pool adapter in caravan-rpc (sqlalchemy engine / sqlx pool wrapper). Imposes ORM choice on users; design discussion pending. invoice-parse keeps direct sqlalchemy/sqlx for now.
+
+**Risk (original).** OpenSearch domains are 20+ minutes to provision. Mitigated by gating emit on actual use; default tier `dev` (smallest instance). In practice, never triggered for invoice-parse.
 
 ### M4b — First Fargate placement (Phase 2, 3–4 sessions)
 

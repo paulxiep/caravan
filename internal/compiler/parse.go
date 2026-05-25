@@ -365,6 +365,11 @@ func parseTarget(file, name string, k, v *yaml.Node, diag *Diagnostics) *Target 
 		"entries":     func(v *yaml.Node) { t.Entries = parseEntryDispatchMap(file, v, diag, what+".entries") },
 		"seams":       func(v *yaml.Node) { t.Seams = parseSeamDispatchMap(file, v, diag, what+".seams") },
 		"composition": func(v *yaml.Node) { t.Composition = parseCompositionMap(file, v, diag, what+".composition") },
+		"creds_passthrough": func(v *yaml.Node) {
+			t.CredsPassthrough = boolScalar(file, v, diag, what+".creds_passthrough")
+		},
+		"aws_profile": func(v *yaml.Node) { t.AwsProfile = stringScalar(file, v, diag, what+".aws_profile") },
+		"backend":     func(v *yaml.Node) { t.Backend = parseBackendConfig(file, v, diag, what+".backend") },
 	})
 	if t.Runtime == "" {
 		diag.Error(nodeSpan(file, v), "%s requires `runtime:`", what)
@@ -425,6 +430,24 @@ func parseCompositionMap(file string, n *yaml.Node, diag *Diagnostics, what stri
 		out[k.Value] = parseCompositionOverride(file, v, diag, entryWhat)
 	})
 	return out
+}
+
+// parseBackendConfig parses `targets.<X>.backend:` into a BackendConfig.
+// Required when the target sets `creds_passthrough: true`; the validator
+// in normalize.go enforces this.
+func parseBackendConfig(file string, n *yaml.Node, diag *Diagnostics, what string) *BackendConfig {
+	if n == nil || n.Kind != yaml.MappingNode {
+		diag.Error(nodeSpan(file, n), "%s must be a mapping", what)
+		return nil
+	}
+	b := &BackendConfig{Span: nodeSpan(file, n)}
+	dispatchFields(file, n, diag, what, fieldMap{
+		"bucket":     func(v *yaml.Node) { b.Bucket = stringScalar(file, v, diag, what+".bucket") },
+		"lock_table": func(v *yaml.Node) { b.LockTable = stringScalar(file, v, diag, what+".lock_table") },
+		"region":     func(v *yaml.Node) { b.Region = stringScalar(file, v, diag, what+".region") },
+		"key":        func(v *yaml.Node) { b.Key = stringScalar(file, v, diag, what+".key") },
+	})
+	return b
 }
 
 // parseCompositionOverride accepts either a scalar string (treated as

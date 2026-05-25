@@ -187,7 +187,45 @@ type Target struct {
 	// CompositionOverride. Empty fields fall through to the resource's
 	// own declaration / target default / variant default at resolve.
 	Composition map[string]*CompositionOverride `json:"composition,omitempty"`
-	Span        Span                            `json:"-"`
+	// CredsPassthrough enables M4-cloud's hybrid-dev mode: when true the
+	// compose emitter mounts the developer's `~/.aws` into each
+	// app-profile service and injects AWS_REGION/AWS_PROFILE; the HCL
+	// emitter writes Terraform for cloud-managed resources alongside the
+	// compose override. Yaml field: `creds_passthrough:`. False outside
+	// M4-cloud targets.
+	CredsPassthrough bool `json:"creds_passthrough,omitempty"`
+	// AwsProfile names the local AWS profile the compose containers
+	// authenticate with via the mounted ~/.aws. Yaml field:
+	// `aws_profile:`. Defaults at phase 3 to "caravan-poc" per the
+	// M4-cloud-prereq onboarding checklist when CredsPassthrough is set.
+	AwsProfile string `json:"aws_profile,omitempty"`
+	// Backend pins the Terraform state backend names for HCL emit. The
+	// values live in caravan.yaml (not env vars or env-time discovery)
+	// so the IR stays self-contained. Required when CredsPassthrough is
+	// set; the M4-cloud-prereq onboarding checklist provides the values
+	// (state bucket + DynamoDB lock table).
+	Backend *BackendConfig `json:"backend,omitempty"`
+	Span    Span           `json:"-"`
+}
+
+// BackendConfig pins the S3+DynamoDB Terraform state backend for one
+// cloud target. Used by HCL emit's backend.tf. The bucket and lock
+// table are created out-of-band in M4-cloud-prereq; caravan reads
+// these names from the user's caravan.yaml.
+type BackendConfig struct {
+	// Bucket is the S3 bucket holding the .tfstate file.
+	Bucket string `json:"bucket"`
+	// LockTable is the DynamoDB table backing tofu's state lock.
+	LockTable string `json:"lock_table"`
+	// Region is the AWS region the bucket + lock table live in. May
+	// differ from the target's Region (state can live in one region
+	// while resources land in another). Defaults to Target.Region at
+	// emit time when empty.
+	Region string `json:"region,omitempty"`
+	// Key is the per-target state-file path inside the bucket. Defaults
+	// to "<app>/<target>.tfstate" at phase 3 when empty.
+	Key  string `json:"key,omitempty"`
+	Span Span   `json:"-"`
 }
 
 // CompositionOverride is one target's per-resource override. Either
@@ -232,6 +270,28 @@ type ResolvedPlan struct {
 	// (post-M3 refactor) tags these with SourceResource so they merge
 	// deterministically with SourceSeam (CARAVAN_RPC_*) keys.
 	ResourceEnvVars map[string]map[string]string `json:"resource_env_vars,omitempty"`
+	// IAMGrants carries the per-entry IAM permission set the HCL emitter
+	// needs (M4-cloud). Keyed by entry name → list of statements;
+	// statements are deduped + sorted within an entry. Populated only
+	// for entries that consume cloud-managed resources; nil otherwise.
+	IAMGrants map[string][]IAMStatement `json:"iam_grants,omitempty"`
+}
+
+// IAMStatement is one resource-action grant tied to a specific resolved
+// resource. ResourceRef is the resource name from the Plan IR (not the
+// cloud-side ARN — HCL emit derives the ARN from the resource block via
+// `aws_s3_bucket.X.arn` references). Actions are sorted so byte-stable
+// HCL output is trivial.
+type IAMStatement struct {
+	// ResourceRef names the resource (Plan IR key) this grant applies to.
+	ResourceRef string `json:"resource_ref"`
+	// ResourceKind is the resolved resource's type (bucket / queue /
+	// search / etc.). Carried alongside ResourceRef so HCL emit can
+	// pick the right ARN expression without re-looking-up the resource.
+	ResourceKind ResourceKind `json:"resource_kind"`
+	// Actions is the sorted, deduped list of AWS API actions granted
+	// (e.g. ["s3:GetObject", "s3:PutObject"]).
+	Actions []string `json:"actions"`
 }
 
 // ResolvedResource is one resource's per-target resolved shape. Carries

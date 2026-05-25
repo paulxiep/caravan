@@ -33,6 +33,7 @@ func applyDefaults(doc *ParsedDoc) {
 	defaulters := []func(*ParsedDoc){
 		defaultOutputDir,
 		defaultSeamServiceNames,
+		defaultHybridTargetFields,
 	}
 	for _, fn := range defaulters {
 		fn(doc)
@@ -66,6 +67,34 @@ func defaultSeamServiceNames(doc *ParsedDoc) {
 	}
 }
 
+// DefaultAwsProfile names the AWS profile compose containers
+// authenticate with via the mounted ~/.aws when the user didn't
+// declare one explicitly. Matches the M4-cloud-prereq onboarding
+// checklist's `aws configure --profile caravan-poc` step.
+const DefaultAwsProfile = "caravan-poc"
+
+// defaultHybridTargetFields fills derived defaults on targets that opt
+// into M4-cloud's hybrid-dev mode (creds_passthrough). Pure defaulting
+// — validation happens in validateHybridTarget.
+func defaultHybridTargetFields(doc *ParsedDoc) {
+	for _, t := range doc.Targets {
+		if !t.CredsPassthrough {
+			continue
+		}
+		if t.AwsProfile == "" {
+			t.AwsProfile = DefaultAwsProfile
+		}
+		if t.Backend != nil {
+			if t.Backend.Region == "" {
+				t.Backend.Region = t.Region
+			}
+			if t.Backend.Key == "" {
+				t.Backend.Key = doc.Name + "/" + t.Name + ".tfstate"
+			}
+		}
+	}
+}
+
 // --- validators --------------------------------------------------------------
 
 // validator is one cross-ref / invariant check. Each is independent
@@ -87,6 +116,7 @@ func runValidators(doc *ParsedDoc, diag *Diagnostics) {
 		validateEntryLanguages,
 		validateResourceVariants,
 		validateTargetCompositionOverrides,
+		validateHybridTarget,
 	}
 	for _, fn := range pipeline {
 		fn(doc, diag)
@@ -327,6 +357,84 @@ func validateTargetCompositionOverrides(doc *ParsedDoc, diag *Diagnostics) {
 			}
 		}
 	}
+}
+
+// validateHybridTarget enforces the surface invariants for M4-cloud's
+// hybrid-dev mode (creds_passthrough: true):
+//
+//  1. runtime must be docker-compose (M4-cloud emits compose +
+//     HCL together; aws-runtime cloud-compute lands at M4b/M7).
+//  2. region must be declared so HCL emit knows where to point the
+//     AWS provider.
+//  3. backend.bucket and backend.lock_table must be set (referenced
+//     by HCL backend.tf; pre-created in M4-cloud-prereq).
+//  4. at least one resource must resolve to cloud-managed — either
+//     via default_composition or a per-resource composition override
+//     or the resource's own declaration. Pure-oss-local targets have
+//     no business mounting ~/.aws.
+func validateHybridTarget(doc *ParsedDoc, diag *Diagnostics) {
+	for _, t := range doc.Targets {
+		if !t.CredsPassthrough {
+			// Backend declared without creds_passthrough is suspicious
+			// but tolerated; M4b may use backend without hybrid mode.
+			continue
+		}
+		if t.Runtime != RuntimeDockerCompose {
+			diag.Error(t.Span,
+				"targets.%s.creds_passthrough requires runtime=%s (got %q)",
+				t.Name, RuntimeDockerCompose, t.Runtime)
+		}
+		if t.Region == "" {
+			diag.Error(t.Span,
+				"targets.%s.creds_passthrough requires `region:` for HCL provider config",
+				t.Name)
+		}
+		if t.Backend == nil {
+			diag.Error(t.Span,
+				"targets.%s.creds_passthrough requires `backend:` (state bucket + lock table from M4-cloud-prereq)",
+				t.Name)
+		} else {
+			if t.Backend.Bucket == "" {
+				diag.Error(t.Backend.Span, "targets.%s.backend.bucket is required", t.Name)
+			}
+			if t.Backend.LockTable == "" {
+				diag.Error(t.Backend.Span, "targets.%s.backend.lock_table is required", t.Name)
+			}
+		}
+		if !targetHasCloudManagedResource(doc, t) {
+			diag.Error(t.Span,
+				"targets.%s.creds_passthrough is set but no resource resolves to cloud-managed (set default_composition or per-resource composition override)",
+				t.Name)
+		}
+	}
+}
+
+// targetHasCloudManagedResource reports whether at least one declared
+// resource would resolve to CompositionCloudManaged under the given
+// target. Mirrors resolveComposition's precedence order without
+// requiring a full resolve.
+func targetHasCloudManagedResource(doc *ParsedDoc, t *Target) bool {
+	for name, r := range doc.Resources {
+		if r == nil {
+			continue
+		}
+		if override, ok := t.Composition[name]; ok && override != nil && override.Mode != "" {
+			if override.Mode == CompositionCloudManaged {
+				return true
+			}
+			continue
+		}
+		if r.Composition != "" {
+			if r.Composition == CompositionCloudManaged {
+				return true
+			}
+			continue
+		}
+		if t.DefaultComposition == CompositionCloudManaged {
+			return true
+		}
+	}
+	return false
 }
 
 // --- helpers -----------------------------------------------------------------

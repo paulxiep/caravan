@@ -3,6 +3,8 @@ package emit
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -95,7 +97,59 @@ func EmitComposeOverride(rp *compiler.ResolvedPlan, userRepoName string, baseCom
 		return nil, err
 	}
 
+	// 5. M4-cloud: when the target opts into hybrid-dev mode, mount the
+	//    host's `~/.aws` into every consumer + peer service (so local
+	//    containers can authenticate to real AWS via the developer's
+	//    profile) and inject AWS_REGION + AWS_PROFILE env vars. Skipped
+	//    for non-hybrid targets — the existing oss-local Phase-1 flow.
+	if target.CredsPassthrough {
+		if err := emitCredsPassthrough(acc, target); err != nil {
+			return nil, err
+		}
+	}
+
 	return acc.Render(target.Name, rp.Plan.OutputDir)
+}
+
+// emitCredsPassthrough adds the `~/.aws` mount + AWS_REGION + AWS_PROFILE
+// to every service already in the accumulator. M4-cloud only.
+//
+// Mount path: absolute, computed at emit time via os.UserHomeDir(). The
+// generated compose file is a per-developer dev override (uncommitted),
+// so encoding the absolute path keeps `${HOME}` / `~` ambiguities out of
+// the runtime. Windows Docker Desktop accepts both forward and back
+// slashes; we emit forward slashes for cross-platform yaml friendliness.
+func emitCredsPassthrough(acc *composeAccumulator, target *compiler.Target) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("creds_passthrough: resolve home dir: %w", err)
+	}
+	awsHostDir := filepath.ToSlash(filepath.Join(home, ".aws"))
+	mount := awsHostDir + ":/root/.aws:ro"
+
+	// Iterate by name (acc.order) for determinism. We touch every
+	// already-emitted service: consumer entries (added by addConsumerSeamEnv
+	// / emitResourceEnvVars) and seam peer services (added by AddService
+	// in step 3). Resource containers are skipped because cloud-managed
+	// resources never emit a container at all (emit/resources.go:72).
+	for _, name := range acc.order {
+		// Mount via AddService merge — mergeService's volume branch
+		// dedupes via set semantics.
+		acc.AddService(name, composeService{Volumes: []string{mount}})
+
+		// AWS_REGION and AWS_PROFILE land in the seam-source band so
+		// they don't collide with the resource-source endpoint vars
+		// (S3_BUCKET, DATABASE_URL, etc.). Both are reserved namespace
+		// markers for cloud auth — not the CARAVAN_RPC_ prefix the
+		// resource-source guard checks.
+		if err := acc.AddEnv(name, "AWS_REGION", target.Region, envSourceSeam); err != nil {
+			return err
+		}
+		if err := acc.AddEnv(name, "AWS_PROFILE", target.AwsProfile, envSourceSeam); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // --- service builders -------------------------------------------------------
@@ -120,6 +174,11 @@ type composeService struct {
 	// compose's `ports:` key. Used by resource containers (M4) so the
 	// user can reach Postgres / Redis / MinIO from the host.
 	Ports []string
+	// Volumes is the compose `volumes:` list. M4-cloud injects the
+	// host's `~/.aws` here on every consumer + peer service when the
+	// target sets `creds_passthrough: true`, so the containers can
+	// authenticate to real AWS via the developer's profile.
+	Volumes []string
 }
 
 type composeBuild struct {
@@ -413,6 +472,11 @@ func serviceNode(svc composeService) *yaml.Node {
 		// Force quoted style on port mappings — the `5432:5432` shape
 		// looks numeric to the yaml emitter without it.
 		add("ports", quotedListNode(svc.Ports))
+	}
+	if len(svc.Volumes) > 0 {
+		// Volume mounts also use the `host:container` shape — same
+		// quoting concern as ports.
+		add("volumes", quotedListNode(svc.Volumes))
 	}
 	if len(svc.DependsOn) > 0 {
 		add("depends_on", dependsOnNode(svc.DependsOn))

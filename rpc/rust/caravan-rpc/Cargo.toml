@@ -30,6 +30,13 @@ client = ["dep:reqwest"]
 # `server` enables the axum-based peer HTTP server used by macro-generated
 # server adapters and the compiler-emitted synthetic peer crate.
 server = ["dep:axum", "dep:tokio"]
+# Resource-adapter feature gates. The seam traits (BlobStore, MessageQueue)
+# always compile; concrete impls are gated so users who only need LocalFs
+# don't pull in aws-sdk / redis / lapin.
+resources-aws = ["dep:aws-config", "dep:aws-sdk-s3", "dep:aws-sdk-sqs", "dep:tokio", "dep:uuid", "dep:url"]
+resources-redis = ["dep:redis", "dep:tokio", "dep:uuid"]
+resources-rabbit = ["dep:lapin", "dep:tokio", "dep:uuid", "dep:url"]
+resources-all = ["resources-aws", "resources-redis", "resources-rabbit"]
 
 [dependencies]
 caravan-rpc-macros = { version = "=0.1.0", path = "../caravan-rpc-macros" }
@@ -62,7 +69,21 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 axum = { version = "0.8", optional = true }
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "net", "signal"], optional = true }
 
+# Resource-adapter optional deps. Pulled in transitively when a user
+# enables `resources-aws`, `resources-redis`, or `resources-rabbit`.
+aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
+aws-sdk-s3 = { version = "1", optional = true }
+aws-sdk-sqs = { version = "1", optional = true }
+redis = { version = "1.0", features = ["tokio-comp", "streams"], optional = true }
+lapin = { version = "2", optional = true }
+url = { version = "2", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+# YAML parsing for the optional yaml_fallback dict on auto_register.
+serde_yaml = "0.9"
+
 [dev-dependencies]
 # Tests use both runtimes — codec / peers / dispatcher unit tests don't need
 # a runtime; integration tests at M2 Session 2+ do.
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros"] }
+tempfile = "3"
+serde_yaml = "0.9"

@@ -157,6 +157,9 @@ func mergeService(dst *composeService, src composeService) {
 	if len(src.Profiles) > 0 {
 		dst.Profiles = mergeStringSet(dst.Profiles, src.Profiles)
 	}
+	if len(src.Volumes) > 0 {
+		dst.Volumes = mergeStringSet(dst.Volumes, src.Volumes)
+	}
 	dst.DependsOn = append(dst.DependsOn, src.DependsOn...)
 	for _, kv := range src.Environment {
 		// Per-key dedup: last write wins.

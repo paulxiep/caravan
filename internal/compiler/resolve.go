@@ -54,7 +54,6 @@ func Resolve(plan *Plan, targetName string, diag *Diagnostics) *ResolvedPlan {
 		rp.EnvVars[du] = map[string]string{
 			"CARAVAN_RPC_PEERS": stringified,
 		}
-		// TODO(M4-cloud): IAM grants per deploy unit.
 		// TODO(M7): CARAVAN_RPC_SHARED_SECRET injection per yaml.
 	}
 	// M4: resolve resource composition + variant per target, then
@@ -62,6 +61,9 @@ func Resolve(plan *Plan, targetName string, diag *Diagnostics) *ResolvedPlan {
 	// (Type, Variant). Empty when the plan declares no resources.
 	rp.ResolvedResources = resolveResources(plan, target)
 	rp.ResourceEnvVars = buildResourceEnvVars(plan, rp.ResolvedResources)
+	// M4-cloud: derive IAM grants per entry from `uses:` + `triggers:`.
+	// Only populated for entries that consume cloud-managed resources.
+	rp.IAMGrants = resolveIAMGrants(plan, rp.ResolvedResources)
 	return rp
 }
 

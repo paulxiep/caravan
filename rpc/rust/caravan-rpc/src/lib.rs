@@ -47,6 +47,12 @@
 
 #![forbid(unsafe_code)]
 
+// `#[wagon]`-generated code emits `::caravan_rpc::...` paths. Inside this
+// crate we re-alias the crate's own name so the macro works on traits
+// declared internally (e.g. the `resources::BlobStore` / `MessageQueue`
+// seams shipped from caravan-rpc itself).
+extern crate self as caravan_rpc;
+
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
@@ -56,6 +62,7 @@ pub use caravan_rpc_macros::wagon;
 pub mod codec;
 pub mod errors;
 pub mod peers;
+pub mod resources;
 
 #[cfg(feature = "client")]
 pub mod dispatch;
@@ -65,6 +72,15 @@ pub mod server;
 
 pub use errors::{RpcError, RpcRemoteError, RpcTransportError};
 pub use peers::{PeerEntry, peer_for};
+pub use resources::{
+    BlobError, BlobStore, LocalFsBlobStore, MessageQueue, QueueError, auto_register_resources,
+};
+#[cfg(feature = "resources-aws")]
+pub use resources::{S3BlobStore, SqsQueue};
+#[cfg(feature = "resources-redis")]
+pub use resources::RedisStreamQueue;
+#[cfg(feature = "resources-rabbit")]
+pub use resources::RabbitMQQueue;
 
 /// Internal re-exports for use by `#[wagon]`-generated code only. Lets the
 /// user's crate depend solely on `caravan-rpc`; the macro reaches in here
