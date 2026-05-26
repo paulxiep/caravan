@@ -205,7 +205,51 @@ type Target struct {
 	// set; the M4-cloud-prereq onboarding checklist provides the values
 	// (state bucket + DynamoDB lock table).
 	Backend *BackendConfig `json:"backend,omitempty"`
-	Span    Span           `json:"-"`
+	// VPC carries the network shape M4b Fargate targets emit (VPC + 2-AZ
+	// subnets + IGW + single/HA NAT). Required for `runtime: fargate`.
+	// Nil on docker-compose targets (no network emission).
+	VPC *VPCConfig `json:"vpc,omitempty"`
+	// CloudMapNamespace is the private DNS namespace registered for
+	// Fargate-Fargate service discovery (D11 → Cloud Map). Defaults to
+	// "<app>.local" at phase 3 when empty on a Fargate target. Ignored
+	// on non-Fargate targets.
+	CloudMapNamespace string `json:"cloud_map_namespace,omitempty"`
+	// ECSClusterName overrides the default ECS cluster name on a Fargate
+	// target. Defaults at phase 3 to "<app>-<target>" when empty.
+	ECSClusterName string `json:"ecs_cluster_name,omitempty"`
+	Span           Span   `json:"-"`
+}
+
+// EmitsHCL reports whether this target produces HCL output. True for
+// any AWS-producing target: hybrid-dev (M4-cloud — compose containers
+// authenticate via creds_passthrough), Fargate (M4b — ECS task
+// placement), and Lambda (M7 — function placement). Stays false for
+// pure docker-compose targets (no AWS shape at all).
+//
+// The signal is Backend != nil: every AWS-producing target requires a
+// remote tofu state backend (validators enforce this upstream), and no
+// pure-compose target carries one. Adding a new placement runtime means
+// adding a validator that requires Backend — the EmitsHCL predicate
+// itself stays unchanged.
+func (t *Target) EmitsHCL() bool {
+	if t == nil {
+		return false
+	}
+	return t.Backend != nil
+}
+
+// VPCConfig pins the VPC shape M4b emits for a Fargate target. Single
+// NAT is the v1 default; HA NAT (one per AZ) is flagged for v1.1 via
+// `nat: ha`.
+type VPCConfig struct {
+	// CIDR is the VPC's IPv4 CIDR block. Defaults at phase 3 to
+	// "10.0.0.0/16" when empty.
+	CIDR string `json:"cidr,omitempty"`
+	// NAT controls NAT gateway redundancy: "single" (one NAT, one AZ
+	// public subnet) or "ha" (one per AZ). Defaults at phase 3 to
+	// "single" — sufficient for staging targets; prod should set "ha".
+	NAT  string `json:"nat,omitempty"`
+	Span Span   `json:"-"`
 }
 
 // BackendConfig pins the S3+DynamoDB Terraform state backend for one

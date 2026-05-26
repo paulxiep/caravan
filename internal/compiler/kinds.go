@@ -76,12 +76,58 @@ type RuntimeKind string
 
 const (
 	RuntimeDockerCompose RuntimeKind = "docker-compose"
-	RuntimeAWS           RuntimeKind = "aws"
+	RuntimeFargate       RuntimeKind = "fargate"
+	// RuntimeLambda is reserved for M7. Not declared here yet — M7 will
+	// add it alongside the Lambda implementation of ComputeEmitter so the
+	// constant lands with usable plumbing.
 )
 
 // IsValid reports whether r names a known runtime.
 func (r RuntimeKind) IsValid() bool {
-	return r == RuntimeDockerCompose || r == RuntimeAWS
+	return r == RuntimeDockerCompose || r == RuntimeFargate
+}
+
+// PrincipalKind is the IAM principal that per-entry policies attach to.
+// Selected per target based on Runtime + composition:
+//
+//	hybrid-dev (compose + cloud-managed resources):   PrincipalIAMUser
+//	staging-fargate (Fargate compute):                PrincipalFargateTaskRole
+//	prod-mixed (Lambda dispatch, M7):                 PrincipalLambdaExecutionRole
+//
+// The HCL emit path branches on this to choose the policy attachment
+// resource type (`aws_iam_user_policy` vs `aws_iam_role_policy`) and
+// whether a role + assume-role policy needs to be emitted alongside.
+type PrincipalKind string
+
+const (
+	PrincipalIAMUser             PrincipalKind = "iam-user"
+	PrincipalFargateTaskRole     PrincipalKind = "fargate-task-role"
+	PrincipalLambdaExecutionRole PrincipalKind = "lambda-execution-role"
+)
+
+// IsValid reports whether p names a known principal kind.
+func (p PrincipalKind) IsValid() bool {
+	return p == PrincipalIAMUser || p == PrincipalFargateTaskRole || p == PrincipalLambdaExecutionRole
+}
+
+// PrincipalForTarget returns the IAM principal kind appropriate for the
+// target's runtime. Called by HCL emit to choose between user-policy
+// and role-policy attachment shapes.
+func PrincipalForTarget(t *Target) PrincipalKind {
+	if t == nil {
+		return PrincipalIAMUser
+	}
+	switch t.Runtime {
+	case RuntimeFargate:
+		return PrincipalFargateTaskRole
+	case RuntimeDockerCompose:
+		// hybrid-dev with creds_passthrough: long-lived access keys on
+		// the IAM user. Pure-local compose targets never reach the IAM
+		// emitter (no cloud-managed resources).
+		return PrincipalIAMUser
+	}
+	// Unknown runtime → safest default. Future placements add cases here.
+	return PrincipalIAMUser
 }
 
 // ResourceVariant names the concrete OSS-local container choice for a

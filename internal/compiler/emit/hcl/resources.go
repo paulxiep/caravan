@@ -70,6 +70,14 @@ func emitDBSQL(body *hclwrite.Body, app, target, resName string, rr *compiler.Re
 	// Security group reference — both `aws_db_instance` and the SG
 	// emit pre-create their own; the SG locks down to the laptop's IP
 	// via data "http" "myip".
+	//
+	// TODO(M9-cloud): on Fargate targets, `aws_security_group.caravan_dev`
+	// is not emitted (gated to hybrid-dev only by renderMain). M9-cloud
+	// must emit a Fargate-resources SG (ingress from tasks SG on 5432)
+	// and parameterize this attribute on target.Runtime. Today
+	// Fargate + RDS produces an undeclared-reference error at tofu plan.
+	// See development_plan.md M9-cloud "Fargate × cloud-managed-resource
+	// cross-product" work item.
 	bb.SetAttributeRaw("vpc_security_group_ids", rawHCL("[aws_security_group.caravan_dev.id]"))
 
 	// DATABASE_URL embeds the AWS-resolved endpoint; the `tofu output
@@ -106,6 +114,9 @@ func emitCache(body *hclwrite.Body, app, target, resName string, _ *compiler.Res
 	bb.SetAttributeValue("node_type", cty.StringVal("cache.t3.micro"))
 	bb.SetAttributeValue("num_cache_nodes", cty.NumberIntVal(1))
 	bb.SetAttributeValue("port", cty.NumberIntVal(6379))
+	// TODO(M9-cloud): same Fargate-target SG hole as emitDBSQL above.
+	// `caravan_dev` SG is hybrid-dev-only; Fargate + ElastiCache currently
+	// produces an undeclared-reference error. Fix alongside the RDS case.
 	bb.SetAttributeRaw("security_group_ids", rawHCL("[aws_security_group.caravan_dev.id]"))
 
 	outputs["REDIS_URL"] = fmt.Sprintf(`"redis://${aws_elasticache_cluster.%s.cache_nodes[0].address}:6379"`, hcLocal)

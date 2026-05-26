@@ -42,6 +42,10 @@ func main() {
 		os.Exit(runSpec(os.Args[2:]))
 	case "compile":
 		os.Exit(runCompile(os.Args[2:]))
+	case "up":
+		os.Exit(runUp(os.Args[2:]))
+	case "down":
+		os.Exit(runDown(os.Args[2:]))
 	case "--version", "-v", "version":
 		fmt.Println("caravan", version)
 	case "--help", "-h", "help":
@@ -59,7 +63,9 @@ func usage(w *os.File) {
 Subcommands:
   check    [--config=path]                 phases 1–2 (lex + parse); exit 1 on schema errors
   spec     [--config=path] [--target=name] phases 1–3 (or 1–4 with --target); JSON Plan/ResolvedPlan to stdout
-  compile  --target=name [--config=path]   phases 1–4 + write placeholder files to <output_dir>/<target>/generated/ (yaml output_dir, default caravan-out/)
+  compile  [--target=name] [--config=path] phases 1–4 + write artifacts to <output_dir>/<target>/generated/ (default target from caravan.yaml's default_target)
+  up       [--target=name] [--config=path] ECR build/push + tofu init+apply on the on-disk HCL (Fargate targets only)
+  down     [--target=name] [--config=path] tofu destroy on the on-disk HCL (Fargate targets only)
 
 Flags:
   --config=PATH    path to caravan.yaml (default: ./caravan.yaml)
@@ -125,54 +131,89 @@ func runSpec(args []string) int {
 	return emitJSON(*asJSON, plan)
 }
 
-// runCompile implements `caravan compile --target=NAME`.
+// runCompile implements `caravan compile [--target=NAME]`. When --target
+// is omitted, falls back to `default_target` from caravan.yaml (same
+// behavior as `docker compose` reading service from compose.yaml).
 func runCompile(args []string) int {
 	fs := flag.NewFlagSet("compile", flag.ContinueOnError)
 	config := fs.String("config", "caravan.yaml", "path to caravan.yaml")
-	target := fs.String("target", "", "target name (required)")
+	target := fs.String("target", "", "target name (default: caravan.yaml's default_target)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *target == "" {
-		fmt.Fprintln(os.Stderr, "caravan compile: --target is required")
+	resolved, err := resolveTargetName(*config, *target)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "caravan compile:", err)
 		return 2
 	}
-	rp, diag, err := compiler.CompileFileForTarget(*config, *target)
+	_, _, wrote, code := compileAndEmit(*config, resolved)
+	for _, p := range wrote {
+		fmt.Fprintln(os.Stderr, "caravan compile: wrote", p)
+	}
+	return code
+}
+
+// resolveTargetName picks the target to operate on. Precedence:
+//
+//  1. `--target=NAME` flag from the user.
+//  2. `default_target:` declared in caravan.yaml.
+//
+// Errors when neither is set, with a message naming the config path so
+// the user knows where to add `default_target:`.
+func resolveTargetName(configPath, requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	plan, _, err := compiler.CompileFile(configPath)
+	if err != nil {
+		return "", err
+	}
+	if plan == nil || plan.DefaultTarget == "" {
+		return "", fmt.Errorf("--target is required (no `default_target:` declared in %s)", configPath)
+	}
+	return plan.DefaultTarget, nil
+}
+
+// compileAndEmit runs the full compile + emit pipeline for one target.
+// Returns the resolved plan + per-target outDir + written file paths +
+// exit code (0 on success). Shared by `caravan compile` and `caravan
+// up` — `up` adds the ECR push + print-apply steps on top.
+//
+// Side effects: prints diagnostics to stderr; writes files into
+// <outputDir>/<target>/generated/.
+func compileAndEmit(config, target string) (*compiler.ResolvedPlan, string, []string, int) {
+	rp, diag, err := compiler.CompileFileForTarget(config, target)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return nil, "", nil, 1
 	}
 	_, _ = diag.WriteTo(os.Stderr)
 	if diag.HasErrors() {
-		return 1
+		return nil, "", nil, 1
 	}
 	if rp == nil {
-		return 1
+		return nil, "", nil, 1
 	}
 
-	outDir := filepath.Join(rp.Plan.OutputDir, *target, "generated")
+	outDir := filepath.Join(rp.Plan.OutputDir, target, "generated")
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return rp, outDir, nil, 1
 	}
 
-	// M1: emit the docker-compose override for docker-compose targets.
-	// M4-cloud will add HCL emission for aws targets.
 	wrote := []string{}
-	if rp.Plan.Targets[*target].Runtime == compiler.RuntimeDockerCompose {
+	tgt := rp.Plan.Targets[target]
+
+	// Compose emit fires for any docker-compose target (Phase 1 + M4
+	// hybrid-dev). Pure-Fargate targets skip compose entirely.
+	if tgt.Runtime == compiler.RuntimeDockerCompose {
 		cwd, err := os.Getwd()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return rp, outDir, wrote, 1
 		}
 		userRepoName := filepath.Base(cwd)
 
-		// M4: scan the user's hand-authored compose for collision
-		// detection. When a resource's emitted service name (e.g.
-		// `postgres`, `redis`) already appears in the base compose,
-		// caravan skips the duplicate container but still injects
-		// the resource endpoint env vars into consumers. Read failure
-		// is non-fatal: log + fall back to emit-everything.
 		baseServices, scanErr := emit.BaseComposeServiceNames(cwd)
 		if scanErr != nil {
 			fmt.Fprintf(os.Stderr, "caravan compile: warning: %v (continuing with full resource emission)\n", scanErr)
@@ -181,75 +222,78 @@ func runCompile(args []string) int {
 		body, err := emit.EmitComposeOverride(rp, userRepoName, baseServices)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return rp, outDir, wrote, 1
 		}
 		path := filepath.Join(outDir, "docker-compose.override.generated.yaml")
 		if err := os.WriteFile(path, body, 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return rp, outDir, wrote, 1
 		}
 		wrote = append(wrote, path)
 
-		// M2: for each container-mode Rust seam, emit the synthetic
-		// peer crate (Cargo.toml + src/main.rs + Dockerfile). Python
-		// container-mode seams need none — they reuse the user's
-		// image with a command override (handled in compose.go).
-		peerPaths, err := writeRustPeerCrates(rp, *target, outDir)
+		peerPaths, err := writeRustPeerCrates(rp, target, outDir)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return rp, outDir, wrote, 1
 		}
 		wrote = append(wrote, peerPaths...)
 
-		// M3: emit per-target patched manifests (requirements.txt for
-		// Python entries; Rust is a no-op until its own milestone).
-		// User's on-disk manifest is read but never modified; the
-		// patched copy lives in the per-target build-context.
 		manifestPaths, err := emit.EmitManifestPatches(rp, outDir, cwd)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return rp, outDir, wrote, 1
 		}
 		wrote = append(wrote, manifestPaths...)
 		rp.Plan.PatchedManifests = manifestPaths
 	}
 
-	// M4-cloud: when the target opts into hybrid-dev mode, emit HCL
-	// (versions/backend/main/iam) + an env.template + a README with the
-	// 3-step run instructions. Skipped for non-hybrid targets — they
-	// stay compose-only as in Phase 1.
-	if rp.Plan.Targets[*target].CredsPassthrough {
+	// HCL emit fires for any AWS-producing target (Target.EmitsHCL —
+	// hybrid-dev, Fargate, Lambda, …). Pure docker-compose targets fall
+	// through with no HCL artifacts.
+	if tgt.EmitsHCL() {
 		hclPaths, err := hcl.EmitHCL(rp, outDir)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return rp, outDir, wrote, 1
 		}
 		wrote = append(wrote, hclPaths...)
 
-		envTemplate, err := emit.EmitEnvTemplate(rp, outDir)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		if envTemplate != "" {
-			wrote = append(wrote, envTemplate)
-		}
+		// Hybrid-dev gets the compose-against-real-AWS README.
+		// Fargate gets its own README (see emit.EmitFargateReadme) with
+		// the `caravan up` workflow.
+		if tgt.CredsPassthrough {
+			envTemplate, err := emit.EmitEnvTemplate(rp, outDir)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return rp, outDir, wrote, 1
+			}
+			if envTemplate != "" {
+				wrote = append(wrote, envTemplate)
+			}
 
-		repoRelative := filepath.Join(rp.Plan.OutputDir, *target, "generated")
-		readme, err := emit.EmitHybridReadme(rp, outDir, repoRelative)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		if readme != "" {
-			wrote = append(wrote, readme)
+			repoRelative := filepath.Join(rp.Plan.OutputDir, target, "generated")
+			readme, err := emit.EmitHybridReadme(rp, outDir, repoRelative)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return rp, outDir, wrote, 1
+			}
+			if readme != "" {
+				wrote = append(wrote, readme)
+			}
+		} else if tgt.Runtime == compiler.RuntimeFargate {
+			repoRelative := filepath.Join(rp.Plan.OutputDir, target, "generated")
+			readme, err := emit.EmitFargateReadme(rp, outDir, repoRelative)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return rp, outDir, wrote, 1
+			}
+			if readme != "" {
+				wrote = append(wrote, readme)
+			}
 		}
 	}
 
-	for _, p := range wrote {
-		fmt.Fprintln(os.Stderr, "caravan compile: wrote", p)
-	}
-	return 0
+	return rp, outDir, wrote, 0
 }
 
 func emitJSON(asJSON bool, v any) int {

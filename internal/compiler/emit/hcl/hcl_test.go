@@ -212,6 +212,154 @@ func TestEmitHCL_OpenSearchGated(t *testing.T) {
 	})
 }
 
+// TestEmitHCL_FargateMulti exercises the full M4b Fargate emit path
+// against a synthesized code-rag-shaped plan: one container-mode entry
+// (chat) + one container-mode seam (Embedder) peer. Asserts the
+// load-bearing pieces — VPC, ECS cluster, Cloud Map namespace + per-seam
+// service, ECR data lookup, per-consumer task def + service, IAM role
+// (not user-policy) attachment — without pinning hclwrite formatting.
+//
+// Catches regressions in the placement-emitter abstraction, the IAM
+// principal-kind refactor, and the resolve.go Cloud Map FQDN dispatch.
+func TestEmitHCL_FargateMulti(t *testing.T) {
+	plan := &compiler.Plan{
+		Name: "code-rag",
+		Entries: map[string]*compiler.Entry{
+			"chat": {
+				Name:       "chat",
+				Path:       ".",
+				Dockerfile: "dockerfile/Dockerfile",
+			},
+		},
+		Seams: map[string]*compiler.Seam{
+			"Embedder": {
+				Name:        "Embedder",
+				Impl:        "code_rag_store::FastEmbedImpl",
+				ServiceName: "embedder",
+			},
+		},
+		Targets: map[string]*compiler.Target{
+			"staging-fargate": {
+				Name:       "staging-fargate",
+				Runtime:    compiler.RuntimeFargate,
+				Region:     "ap-southeast-1",
+				AwsProfile: "caravan-poc",
+				Backend: &compiler.BackendConfig{
+					Bucket:    "caravan-rpc-poc-state",
+					LockTable: "caravan-poc-state-lock",
+					Region:    "ap-southeast-1",
+					Key:       "code-rag/staging-fargate.tfstate",
+				},
+				Entries: map[string]compiler.EntryDispatchMode{
+					"chat": compiler.EntryContainer,
+				},
+				Seams: map[string]compiler.SeamDispatchMode{
+					"Embedder": compiler.SeamContainer,
+				},
+				VPC:               &compiler.VPCConfig{CIDR: "10.0.0.0/16", NAT: "single"},
+				CloudMapNamespace: "code-rag.local",
+				ECSClusterName:    "code-rag-staging-fargate",
+			},
+		},
+	}
+	diag := &compiler.Diagnostics{}
+	rp := compiler.Resolve(plan, "staging-fargate", diag)
+	if rp == nil || diag.HasErrors() {
+		t.Fatalf("Resolve failed: %v", diag)
+	}
+
+	outDir := t.TempDir()
+	written, err := EmitHCL(rp, outDir)
+	if err != nil {
+		t.Fatalf("EmitHCL: %v", err)
+	}
+	// versions.tf + backend.tf + main.tf. No iam.tf (no IAM grants — no
+	// cloud-managed resources declared in this synthetic plan).
+	if len(written) != 3 {
+		t.Errorf("expected 3 files (versions, backend, main); got %d: %v", len(written), written)
+	}
+
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join(outDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return string(b)
+	}
+
+	main := read("main.tf")
+	for _, want := range []string{
+		// Provider
+		`provider "aws"`,
+		`"ap-southeast-1"`,
+		// VPC layer
+		`"aws_vpc" "caravan"`,
+		`"10.0.0.0/16"`,
+		`"aws_internet_gateway" "caravan"`,
+		`"aws_subnet" "caravan_public_a"`,
+		`"aws_subnet" "caravan_public_b"`,
+		`"aws_subnet" "caravan_private_a"`,
+		`"aws_subnet" "caravan_private_b"`,
+		`"aws_nat_gateway" "caravan"`,
+		`"aws_route_table" "caravan_public"`,
+		`"aws_route_table" "caravan_private"`,
+		`"aws_security_group" "caravan_tasks"`,
+		// ECS cluster + Cloud Map namespace
+		`"aws_ecs_cluster" "caravan"`,
+		`"code-rag-staging-fargate"`,
+		`"aws_service_discovery_private_dns_namespace" "caravan"`,
+		`"code-rag.local"`,
+		// Execution role (per-target, AWS-managed policy attached)
+		`"aws_iam_role" "caravan_execution"`,
+		`AmazonECSTaskExecutionRolePolicy`,
+		// ECR data lookups — repo name = entry name verbatim
+		`"aws_ecr_repository" "caravan_chat"`,
+		`name = "chat"`,
+		// Per-consumer task defs
+		`"aws_ecs_task_definition" "chat"`,
+		`"aws_ecs_task_definition" "embedder"`,
+		`"FARGATE"`,
+		`"awsvpc"`,
+		// Cloud Map service ONLY for the seam (not the entry)
+		`"aws_service_discovery_service" "embedder"`,
+		// ECS services + service_registries on the seam
+		`"aws_ecs_service" "chat"`,
+		`"aws_ecs_service" "embedder"`,
+		`service_registries`,
+		// CARAVAN_RPC_PEERS env: Cloud Map FQDN for the Embedder URL
+		`http://embedder.code-rag.local:8080`,
+		// Peer service env carries the role switch
+		`"peer-Embedder"`,
+		// Outputs
+		`output "VPC_ID"`,
+		`output "CLOUD_MAP_NAMESPACE_ID"`,
+		`output "CLUSTER_NAME"`,
+		`output "TASKS_SG_ID"`,
+	} {
+		if !strings.Contains(main, want) {
+			t.Errorf("main.tf missing %q", want)
+		}
+	}
+
+	// Negative: the chat entry should NOT have a Cloud Map service
+	// (only seams do — entries don't have internal callers within the
+	// VPC for M4b's PoC scope).
+	if strings.Contains(main, `"aws_service_discovery_service" "chat"`) {
+		t.Errorf("chat entry should not register a Cloud Map service:\n%s", main)
+	}
+	// Negative: laptop-IP SG must NOT be emitted on Fargate targets
+	// (the tasks SG replaces it; tasks reach resources from inside the
+	// VPC, not from the developer's laptop).
+	if strings.Contains(main, `"aws_security_group" "caravan_dev"`) {
+		t.Errorf("Fargate target should not emit the laptop-IP SG:\n%s", main)
+	}
+	// Negative: Embedder URL in CARAVAN_RPC_PEERS must include the
+	// Cloud Map namespace suffix, never a bare hostname.
+	if strings.Contains(main, `http://embedder:8080`) {
+		t.Errorf("Fargate target emitted bare hostname instead of Cloud Map FQDN:\n%s", main)
+	}
+}
+
 // TestEmitHCL_NoIAMFileWhenNoGrants confirms iam.tf is skipped when no
 // entry consumes a cloud-managed resource that grants IAM perms (i.e.
 // db.sql / cache only). Avoids an empty placeholder file.

@@ -29,8 +29,12 @@ func EmitHCL(rp *compiler.ResolvedPlan, outDir string) ([]string, error) {
 	if target == nil {
 		return nil, fmt.Errorf("target %q not in plan", rp.TargetName)
 	}
-	if !target.CredsPassthrough || target.Backend == nil {
-		return nil, fmt.Errorf("EmitHCL: target %q is not in hybrid-dev mode", target.Name)
+	// HCL emit fires for any AWS-producing target (Target.EmitsHCL).
+	// Per-runtime validators (validateHybridTarget, validateFargateTarget,
+	// future validateLambdaTarget) enforce the shape upstream; this is a
+	// final guard against caller bugs.
+	if !target.EmitsHCL() {
+		return nil, fmt.Errorf("EmitHCL: target %q does not produce HCL (no backend)", target.Name)
 	}
 
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
@@ -46,10 +50,16 @@ func EmitHCL(rp *compiler.ResolvedPlan, outDir string) ([]string, error) {
 		{name: "main.tf", body: renderMain(rp, target)},
 	}
 	if len(rp.IAMGrants) > 0 {
-		files = append(files, struct {
-			name string
-			body []byte
-		}{name: "iam.tf", body: renderIAM(rp, target)})
+		// renderIAM may return nil when the target's principal kind is
+		// not yet implemented in this milestone (e.g. PrincipalLambdaExecutionRole
+		// pending M7). Skip the iam.tf write rather than shipping an
+		// empty file.
+		if iamBody := renderIAM(rp, target); iamBody != nil {
+			files = append(files, struct {
+				name string
+				body []byte
+			}{name: "iam.tf", body: iamBody})
+		}
 	}
 
 	written := make([]string, 0, len(files))
@@ -110,10 +120,16 @@ func renderBackend(b *compiler.BackendConfig) []byte {
 // blocks + outputs. Order:
 //
 //	provider
-//	[data "http" "myip" — only when any VPC-only resource exists]
-//	[aws_security_group — same condition]
+//	[data "http" "myip" + aws_security_group — only when needsLaptopSG]
+//	[VPC + ECS cluster + Cloud Map namespace + task defs + services —
+//	 only when target.Runtime == RuntimeFargate]
 //	per-resource (sorted alphabetically by resource name)
 //	outputs (sorted alphabetically by output name)
+//
+// The laptop-IP SG path is M4-cloud-only (hybrid-dev): it pins access
+// to VPC-only resources (RDS, ElastiCache) from the developer's laptop.
+// Fargate targets use the tasks SG (emitted via emitVPC) instead — tasks
+// reach resources from inside the VPC, no laptop ingress needed.
 func renderMain(rp *compiler.ResolvedPlan, target *compiler.Target) []byte {
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
@@ -129,22 +145,37 @@ func renderMain(rp *compiler.ResolvedPlan, target *compiler.Target) []byte {
 	// Walk cloud-managed resources in sorted order. Resource-kind
 	// dispatch picks the right emitter from the catalog.
 	resources := cloudManagedResources(rp)
-	needsSG := false
-	for _, name := range resources {
-		rr := rp.ResolvedResources[name]
-		if rr.Type == compiler.ResourceDBSQL || rr.Type == compiler.ResourceCache {
-			needsSG = true
-			break
+	needsLaptopSG := false
+	if target.Runtime != compiler.RuntimeFargate {
+		// Only hybrid-dev (compose + cloud-managed resources) needs the
+		// laptop-IP SG. Fargate targets put RDS/ElastiCache (when present)
+		// inside the VPC alongside the tasks; access flows over the tasks
+		// SG, not from the laptop. Cross-product "Fargate + RDS + SG" is
+		// a future cleanup.
+		for _, name := range resources {
+			rr := rp.ResolvedResources[name]
+			if rr.Type == compiler.ResourceDBSQL || rr.Type == compiler.ResourceCache {
+				needsLaptopSG = true
+				break
+			}
 		}
 	}
 
-	if needsSG {
+	if needsLaptopSG {
 		emitMyIPLookup(body)
 		emitSecurityGroup(body, rp.Plan.Name, target.Name)
 	}
 
 	outputs := map[string]string{} // env-var name → HCL reference expression
-	gateOpenSearch := target.AwsProfile // placeholder; gating logic below
+
+	// VPC + Fargate scaffolding before resources so resource blocks can
+	// reference VPC subnet/SG outputs later if a future iteration moves
+	// RDS/ElastiCache into the VPC. Today's resource emitters are
+	// VPC-unaware so order doesn't strictly matter, but this keeps the
+	// emitted HCL readable top-to-bottom.
+	if target.Runtime == compiler.RuntimeFargate {
+		emitVPC(body, rp.Plan.Name, target.Name, target.VPC, outputs)
+	}
 
 	for _, name := range resources {
 		rr := rp.ResolvedResources[name]
@@ -154,7 +185,6 @@ func renderMain(rp *compiler.ResolvedPlan, target *compiler.Target) []byte {
 			// uses: actually references it.
 			continue
 		}
-		_ = gateOpenSearch
 		switch rr.Type {
 		case compiler.ResourceBucket:
 			emitBucket(body, rp.Plan.Name, target.Name, name, rr, outputs)
@@ -169,6 +199,10 @@ func renderMain(rp *compiler.ResolvedPlan, target *compiler.Target) []byte {
 		}
 		body.AppendNewline()
 	}
+
+	// Compute emission: ECS task defs + services + Cloud Map for Fargate
+	// targets. No-op for hybrid-dev (compose handles compute there).
+	emitComputeForTarget(body, rp, target, outputs)
 
 	// Output blocks — drive the `tofu output -json | jq -r` flow
 	// documented in the generated README. Sorted by env-var name.

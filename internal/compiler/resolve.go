@@ -206,7 +206,7 @@ func peerEntryFor(seam *Seam, target *Target, diag *Diagnostics) PeerEntry {
 		mode = SeamInproc
 	}
 	if builder, ok := peerBuilders[mode]; ok {
-		return builder(seam, diag)
+		return builder(seam, target, diag)
 	}
 	panic(fmt.Sprintf("unhandled SeamDispatchMode: %q", mode))
 }
@@ -214,20 +214,36 @@ func peerEntryFor(seam *Seam, target *Target, diag *Diagnostics) PeerEntry {
 // peerBuilders maps a dispatch mode to the function that produces its
 // PeerEntry. Adding a new mode is one entry here + one constant in
 // kinds.go + one case in the mode's `IsValid`.
-var peerBuilders = map[SeamDispatchMode]func(*Seam, *Diagnostics) PeerEntry{
+//
+// Builders take the target so they can vary the dispatch URL by runtime
+// — e.g. `mode: container` produces a compose hostname on a
+// docker-compose target and a Cloud Map FQDN on a Fargate target.
+var peerBuilders = map[SeamDispatchMode]func(*Seam, *Target, *Diagnostics) PeerEntry{
 	SeamInproc:    buildInprocPeer,
 	SeamContainer: buildContainerPeer,
 	SeamLambda:    buildLambdaPeer,
 }
 
-func buildInprocPeer(_ *Seam, _ *Diagnostics) PeerEntry {
+func buildInprocPeer(_ *Seam, _ *Target, _ *Diagnostics) PeerEntry {
 	return PeerEntry{Mode: "inproc"}
 }
 
-func buildContainerPeer(seam *Seam, _ *Diagnostics) PeerEntry {
+// buildContainerPeer produces the URL for a `mode: container` seam.
+// Compose targets: bare hostname (`http://embedder:8080`) — docker's
+// embedded DNS resolves service names within the compose network.
+// Fargate targets: Cloud Map FQDN (`http://embedder.code-rag.local:8080`)
+// — ECS auto-registers the task in the target's private DNS namespace
+// so other tasks resolve the name to the peer's private IP.
+func buildContainerPeer(seam *Seam, target *Target, _ *Diagnostics) PeerEntry {
 	host := seam.ServiceName
 	if host == "" {
 		host = kebabCase(seam.Name) // defaulted in Normalize; defensive
+	}
+	if target != nil && target.Runtime == RuntimeFargate {
+		ns := target.CloudMapNamespace
+		if ns != "" {
+			host = host + "." + ns
+		}
 	}
 	return PeerEntry{
 		Mode: "http",
@@ -235,7 +251,7 @@ func buildContainerPeer(seam *Seam, _ *Diagnostics) PeerEntry {
 	}
 }
 
-func buildLambdaPeer(seam *Seam, diag *Diagnostics) PeerEntry {
+func buildLambdaPeer(seam *Seam, _ *Target, diag *Diagnostics) PeerEntry {
 	// TODO(M7): real Function URL from emitted AWS resources.
 	diag.Warn(seam.Span, "lambda dispatch lands at M7; emitting placeholder function_url")
 	return PeerEntry{
