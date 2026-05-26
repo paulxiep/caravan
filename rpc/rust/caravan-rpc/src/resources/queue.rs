@@ -216,12 +216,10 @@ mod rabbit_impl {
             let url = self.url.clone();
             let (conn, ch) = tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(async {
-                    let conn = lapin::Connection::connect(
-                        &url,
-                        lapin::ConnectionProperties::default(),
-                    )
-                    .await
-                    .map_err(|e| QueueError::RabbitMQ(e.to_string()))?;
+                    let conn =
+                        lapin::Connection::connect(&url, lapin::ConnectionProperties::default())
+                            .await
+                            .map_err(|e| QueueError::RabbitMQ(e.to_string()))?;
                     let ch = conn
                         .create_channel()
                         .await
@@ -315,10 +313,7 @@ mod rabbit_impl {
                             break;
                         }
                         let msg = ch
-                            .basic_get(
-                                &topic_owned,
-                                lapin::options::BasicGetOptions::default(),
-                            )
+                            .basic_get(&topic_owned, lapin::options::BasicGetOptions::default())
                             .await
                             .map_err(|e| QueueError::RabbitMQ(e.to_string()))?;
                         match msg {

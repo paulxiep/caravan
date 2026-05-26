@@ -204,6 +204,12 @@ func renderMain(rp *compiler.ResolvedPlan, target *compiler.Target) []byte {
 	// targets. No-op for hybrid-dev (compose handles compute there).
 	emitComputeForTarget(body, rp, target, outputs)
 
+	// Lambda seams (M7) — emitted independently of target.Runtime since
+	// Lambda is a per-seam dispatch mode, not a target runtime. Today's
+	// only host runtime that wires Lambda seams is Fargate (prod-mixed);
+	// future lambda-mixed compose targets will also call this.
+	emitLambdaSeams(body, rp, target, outputs)
+
 	// Output blocks — drive the `tofu output -json | jq -r` flow
 	// documented in the generated README. Sorted by env-var name.
 	emitOutputs(body, outputs)

@@ -30,9 +30,9 @@ pub use queue::{MessageQueue, QueueError};
 
 #[cfg(feature = "resources-aws")]
 pub use blob_store::S3BlobStore;
-#[cfg(feature = "resources-aws")]
-pub use queue::SqsQueue;
-#[cfg(feature = "resources-redis")]
-pub use queue::RedisStreamQueue;
 #[cfg(feature = "resources-rabbit")]
 pub use queue::RabbitMQQueue;
+#[cfg(feature = "resources-redis")]
+pub use queue::RedisStreamQueue;
+#[cfg(feature = "resources-aws")]
+pub use queue::SqsQueue;

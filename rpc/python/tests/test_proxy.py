@@ -334,16 +334,25 @@ def test_http_mode_url_error_raises_transport_error():
 
 
 # ---------------------------------------------------------------------------
-# Lambda mode reserved for M7.
+# Lambda mode (M7). client(I).method returns a SigV4-signed dispatcher.
+# We don't make a real round-trip here; just verify the dispatcher is built
+# (vs. the M2/B0-era NotImplementedError stub it replaced).
 
-def test_lambda_mode_is_not_implemented_yet():
+def test_lambda_mode_returns_sigv4_dispatcher():
+    pytest.importorskip("botocore")
     provide(LLMExtraction, GeminiExtractor())
     os.environ["CARAVAN_RPC_PEERS"] = json.dumps(
-        {"LLMExtraction": {"mode": "lambda", "function_url": "https://x.lambda-url"}}
+        {
+            "LLMExtraction": {
+                "mode": "lambda",
+                "function_url": "https://abc.lambda-url.us-east-1.on.aws/",
+            }
+        }
     )
-
-    with pytest.raises(NotImplementedError, match="M7"):
-        _ = client(LLMExtraction).extract
+    dispatcher = client(LLMExtraction).extract
+    assert callable(dispatcher)
+    # Naming preserved for tracebacks.
+    assert dispatcher.__name__ == "LLMExtraction.extract"
 
 
 # ---------------------------------------------------------------------------

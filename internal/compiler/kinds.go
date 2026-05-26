@@ -28,6 +28,14 @@ const (
 	ResourceStream ResourceKind = "stream"
 	ResourceSearch ResourceKind = "search"
 	ResourceLLM    ResourceKind = "llm"
+
+	// ResourceKindLambdaCall is an internal marker used on IAMStatement
+	// entries that represent a caller's permission to invoke a Lambda
+	// seam (M7). Not a user-declared resource type — explicitly excluded
+	// from allResourceKinds so `type: _lambda_call` in yaml fails
+	// IsValid(). HCL emit recognizes it to produce the correct ARN
+	// expression (aws_lambda_function.<seam>.arn).
+	ResourceKindLambdaCall ResourceKind = "_lambda_call"
 )
 
 // allResourceKinds is the canonical set used for validation. Update
@@ -77,9 +85,10 @@ type RuntimeKind string
 const (
 	RuntimeDockerCompose RuntimeKind = "docker-compose"
 	RuntimeFargate       RuntimeKind = "fargate"
-	// RuntimeLambda is reserved for M7. Not declared here yet — M7 will
-	// add it alongside the Lambda implementation of ComputeEmitter so the
-	// constant lands with usable plumbing.
+	// No RuntimeLambda: M7's Lambda demo treats Lambda as a *seam
+	// dispatch mode* (`seams.X: lambda`) inside Fargate or compose
+	// targets, not as a target runtime. A "pure Lambda entries" target
+	// would need RuntimeLambda; reserved for a future milestone.
 )
 
 // IsValid reports whether r names a known runtime.
@@ -215,7 +224,7 @@ type Language string
 const (
 	LanguagePython  Language = "python"
 	LanguageRust    Language = "rust"
-	LanguageTS      Language = "ts"      // post-PoC
-	LanguageGo      Language = "go"      // post-PoC
+	LanguageTS      Language = "ts" // post-PoC
+	LanguageGo      Language = "go" // post-PoC
 	LanguageUnknown Language = "unknown"
 )

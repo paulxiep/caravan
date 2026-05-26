@@ -16,8 +16,8 @@ type Span struct {
 // model into entries (top-level deploy units) + seams (synchronous
 // abstraction boundaries) + per-target dispatch overrides.
 type Plan struct {
-	Name          string               `json:"name"`
-	DefaultTarget string               `json:"default_target,omitempty"`
+	Name          string `json:"name"`
+	DefaultTarget string `json:"default_target,omitempty"`
 	// OutputDir is the per-target write root. `caravan compile
 	// --target=<t>` writes its artifacts under <OutputDir>/<t>/generated/.
 	// Yaml field: `output_dir`. Defaults at phase 3 (Normalize) to
@@ -25,12 +25,12 @@ type Plan struct {
 	// collide with a hand-authored `infra/` the user already owns.
 	// Existing repos that want to keep the previous layout set
 	// `output_dir: infra` explicitly.
-	OutputDir     string               `json:"output_dir,omitempty"`
-	Entries       map[string]*Entry    `json:"entries,omitempty"`
-	Seams         map[string]*Seam     `json:"seams,omitempty"`
-	Resources     map[string]*Resource `json:"resources,omitempty"`
-	Secrets       map[string]*Secret   `json:"secrets,omitempty"`
-	Targets       map[string]*Target   `json:"targets,omitempty"`
+	OutputDir string               `json:"output_dir,omitempty"`
+	Entries   map[string]*Entry    `json:"entries,omitempty"`
+	Seams     map[string]*Seam     `json:"seams,omitempty"`
+	Resources map[string]*Resource `json:"resources,omitempty"`
+	Secrets   map[string]*Secret   `json:"secrets,omitempty"`
+	Targets   map[string]*Target   `json:"targets,omitempty"`
 	// PatchedManifests lists per-target build-context manifest files
 	// (e.g. requirements.txt) written by phase-5 emit/manifest.go. Empty
 	// until EmitManifestPatches runs. Surfaced so the CLI can log what
@@ -82,7 +82,7 @@ type Seam struct {
 	// Dockerfile is the image the peer service uses when this seam
 	// dispatches as a container. Often the same as the consuming
 	// entry's Dockerfile (the image already carries the impl code).
-	Dockerfile string `json:"dockerfile,omitempty"`
+	Dockerfile string   `json:"dockerfile,omitempty"`
 	Uses       []string `json:"uses,omitempty"`
 	// Impl is the impl-class reference the M1 compose-emitter passes
 	// to the peer service's serve command. Python shape: "module:Class".
@@ -100,18 +100,26 @@ type Seam struct {
 	// `../.env` so the peer inherits GEMINI_API_KEY; code-rag's
 	// Embedder leaves it unset (no envvar deps).
 	EnvFile string `json:"env_file,omitempty"`
-	Span    Span   `json:"-"`
+	// ImageTarget names the multi-stage Dockerfile stage to use for
+	// this seam's Lambda peer image (M7). Optional; only consulted
+	// when at least one target dispatches the seam as `lambda`. Lets
+	// the user opt into a slim runtime stage (excluding heavy deps
+	// not needed by the seam impl) to meet sub-2s Lambda cold-start.
+	// Parallel to Entry.RuntimeTarget. Empty falls back to the host
+	// entry's runtime_target (or the Dockerfile's default stage).
+	ImageTarget string `json:"image_target,omitempty"`
+	Span        Span   `json:"-"`
 }
 
 // Trigger is the shape that drives an entry's lifecycle. PoC supports
 // http (long-running HTTP server), queue (consumer loop), cron, stream.
 type Trigger struct {
-	Kind   TriggerKind   `json:"kind"`
-	HTTP   *HTTPTrigger  `json:"http,omitempty"`
-	Queue  *QueueTrigger `json:"queue,omitempty"`
-	Cron   *CronTrigger  `json:"cron,omitempty"`
+	Kind   TriggerKind    `json:"kind"`
+	HTTP   *HTTPTrigger   `json:"http,omitempty"`
+	Queue  *QueueTrigger  `json:"queue,omitempty"`
+	Cron   *CronTrigger   `json:"cron,omitempty"`
 	Stream *StreamTrigger `json:"stream,omitempty"`
-	Span   Span          `json:"-"`
+	Span   Span           `json:"-"`
 }
 
 // HTTPTrigger declares an http endpoint on the entry.
@@ -287,8 +295,8 @@ type CompositionOverride struct {
 // env vars (DATABASE_URL, REDIS_URL, etc.). IAM, networking, and
 // secret resolution stay deferred (M4-cloud / M7).
 type ResolvedPlan struct {
-	Plan       *Plan                        `json:"plan"`
-	TargetName string                       `json:"target"`
+	Plan       *Plan  `json:"plan"`
+	TargetName string `json:"target"`
 	// EnvVars carries the SDK-control-plane env vars per deploy unit
 	// (CARAVAN_RPC_PEERS, etc.). Source = seam dispatch.
 	EnvVars map[string]map[string]string `json:"env_vars"`

@@ -153,10 +153,18 @@ func parseTriggers(file string, n *yaml.Node, diag *Diagnostics, what string) []
 // inner mapping. Adding a new trigger kind is one entry here + one
 // const in kinds.go.
 var triggerParsers = map[TriggerKind]func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger){
-	TriggerHTTP:   func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) { t.HTTP = parseHTTPTrigger(file, n, diag) },
-	TriggerQueue:  func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) { t.Queue = parseQueueTrigger(file, n, diag) },
-	TriggerCron:   func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) { t.Cron = parseCronTrigger(file, n, diag) },
-	TriggerStream: func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) { t.Stream = parseStreamTrigger(file, n, diag) },
+	TriggerHTTP: func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) {
+		t.HTTP = parseHTTPTrigger(file, n, diag)
+	},
+	TriggerQueue: func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) {
+		t.Queue = parseQueueTrigger(file, n, diag)
+	},
+	TriggerCron: func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) {
+		t.Cron = parseCronTrigger(file, n, diag)
+	},
+	TriggerStream: func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) {
+		t.Stream = parseStreamTrigger(file, n, diag)
+	},
 }
 
 func parseTrigger(file string, item *yaml.Node, diag *Diagnostics, what string) (Trigger, bool) {
@@ -237,6 +245,7 @@ func parseSeam(file, name string, k, v *yaml.Node, diag *Diagnostics) *Seam {
 		"impl":         func(v *yaml.Node) { s.Impl = stringScalar(file, v, diag, what+".impl") },
 		"service_name": func(v *yaml.Node) { s.ServiceName = stringScalar(file, v, diag, what+".service_name") },
 		"env_file":     func(v *yaml.Node) { s.EnvFile = stringScalar(file, v, diag, what+".env_file") },
+		"image_target": func(v *yaml.Node) { s.ImageTarget = stringScalar(file, v, diag, what+".image_target") },
 	})
 	return s
 }

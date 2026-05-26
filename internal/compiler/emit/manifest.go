@@ -57,8 +57,8 @@ type ManifestPatch struct {
 //   - Python: append-line semantics on requirements.txt. Errors on
 //     version mismatch per D9 (development_plan.md decision gate).
 //   - Rust:   no-op for M3. Rust's manifest-patch path is its own
-//             milestone story (M2 didn't need it because the SDK was
-//             added via path-dep in code-rag).
+//     milestone story (M2 didn't need it because the SDK was
+//     added via path-dep in code-rag).
 //   - Other:  skipped silently; emit_test will fail before this matters.
 //
 // Returns the list of written paths so the CLI can log them alongside

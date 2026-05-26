@@ -204,7 +204,14 @@ fn http_mode_override_returns_macro_generated_http_client() {
     assert_ne!(h_ptr, local_ptr, "expected HttpClient adapter, got local");
 }
 
-// ---------- lambda mode override panics with M7 pointer ----------
+// ---------- lambda-mode override routes to macro-generated client (M7) ----------
+//
+// LambdaSeam goes through the full proc-macro codegen path, so an
+// `inventory::submit!` factory exists. With lambda-mode in the override
+// table + a registered local impl, client() should return the
+// macro-generated adapter wrapping the Function URL (not the local impl).
+// We don't actually make the SigV4 round-trip here; we just verify the
+// returned Arc is NOT the local one (i.e., the factory was consulted).
 
 #[wagon]
 trait LambdaSeam: Send + Sync {
@@ -219,16 +226,20 @@ impl LambdaSeam for LambdaImpl {
 }
 
 #[test]
-#[should_panic(expected = "Lambda dispatch")]
-fn lambda_mode_override_panics_with_m7_pointer() {
+fn lambda_mode_override_returns_macro_generated_client() {
     let _g = PeerOverride::set(&[(
         "LambdaSeam",
         PeerEntry::Lambda {
-            function_url: "https://x.lambda-url.us-east-1.on.aws/".to_string(),
+            function_url: "https://abc.lambda-url.us-east-1.on.aws/".to_string(),
         },
     )]);
     provide::<dyn LambdaSeam>(Arc::new(LambdaImpl));
-    let _ = client::<dyn LambdaSeam>();
+
+    let h = client::<dyn LambdaSeam>();
+    let local: Arc<dyn LambdaSeam> = Arc::new(LambdaImpl);
+    let h_ptr = Arc::as_ptr(&h) as *const ();
+    let local_ptr = Arc::as_ptr(&local) as *const ();
+    assert_ne!(h_ptr, local_ptr, "expected Lambda adapter, got local");
 }
 
 // ---------- distinct interfaces don't collide on TypeId ----------

@@ -212,6 +212,103 @@ func buildAndPushImages(rp *compiler.ResolvedPlan, tgt *compiler.Target) error {
 			return fmt.Errorf("entry %q: %w", entryName, err)
 		}
 	}
+
+	// M7: build + push one image per Lambda seam, tagged `lambda-<seam>`.
+	// Reuses the host entry's ECR repo + Dockerfile; the multi-stage
+	// target comes from seam.ImageTarget (slim variant) or falls back to
+	// the host entry's RuntimeTarget.
+	lambdaSeams := make([]string, 0)
+	for n, mode := range tgt.Seams {
+		if mode == compiler.SeamLambda {
+			lambdaSeams = append(lambdaSeams, n)
+		}
+	}
+	sort.Strings(lambdaSeams)
+	for _, seamName := range lambdaSeams {
+		seam := rp.Plan.Seams[seamName]
+		if seam == nil {
+			return fmt.Errorf("seam %q missing from plan", seamName)
+		}
+		host := findLambdaHostEntry(rp.Plan, seam)
+		if host == nil {
+			return fmt.Errorf("seam %q (lambda mode): no entry has path %q", seamName, seam.Path)
+		}
+		if err := buildAndPushLambdaSeam(cwd, host, seam, tgt); err != nil {
+			return fmt.Errorf("seam %q: %w", seamName, err)
+		}
+	}
+	return nil
+}
+
+// findLambdaHostEntry returns the alphabetically-first entry whose path
+// matches the seam's path. Mirrors emit/hcl/compute_lambda.go's
+// lambdaHostEntry without crossing the import boundary.
+func findLambdaHostEntry(plan *compiler.Plan, seam *compiler.Seam) *compiler.Entry {
+	names := make([]string, 0, len(plan.Entries))
+	for n := range plan.Entries {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		e := plan.Entries[n]
+		if e != nil && e.Path != "" && e.Path == seam.Path {
+			return e
+		}
+	}
+	return nil
+}
+
+// buildAndPushLambdaSeam builds the host entry's Dockerfile with the
+// seam's image target (slim stage, when set) and pushes to the host
+// entry's ECR repo under the `lambda-<seam>` tag. The compiler's
+// compute_lambda.go references this same tag in aws_lambda_function's
+// image_uri attribute.
+func buildAndPushLambdaSeam(cwd string, entry *compiler.Entry, seam *compiler.Seam, tgt *compiler.Target) error {
+	repoName := dashedName(entry.Name)
+	dockerfile := entry.Dockerfile
+	if dockerfile == "" {
+		dockerfile = "Dockerfile"
+	}
+	buildContext := entry.Path
+	if buildContext == "" {
+		buildContext = "."
+	}
+	stageTarget := seam.ImageTarget
+	if stageTarget == "" {
+		stageTarget = entry.RuntimeTarget
+	}
+
+	repoURI, err := ecrRepoURI(repoName, tgt.Region, tgt.AwsProfile)
+	if err != nil {
+		return fmt.Errorf("resolve ECR URI for %q: %w", repoName, err)
+	}
+	imageURI := fmt.Sprintf("%s:lambda-%s", repoURI, dashedName(seam.Name))
+
+	fmt.Fprintf(os.Stderr, "caravan up: building lambda image for seam %q (Dockerfile=%s, target=%s)\n",
+		seam.Name, dockerfile, stageTarget)
+	buildArgs := []string{"build", "-f", dockerfile, "-t", imageURI}
+	if stageTarget != "" {
+		buildArgs = append(buildArgs, "--target", stageTarget)
+	}
+	buildArgs = append(buildArgs, buildContext)
+	if err := runStreaming("docker", buildArgs, cwd, nil); err != nil {
+		return fmt.Errorf("docker build: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "caravan up: logging in to ECR (%s)\n", registryFromURI(repoURI))
+	pwd, err := captureOutput("aws", []string{"ecr", "get-login-password", "--region", tgt.Region, "--profile", tgt.AwsProfile}, cwd)
+	if err != nil {
+		return fmt.Errorf("aws ecr get-login-password: %w", err)
+	}
+	loginArgs := []string{"login", "--username", "AWS", "--password-stdin", registryFromURI(repoURI)}
+	if err := runStreaming("docker", loginArgs, cwd, strings.NewReader(strings.TrimSpace(pwd))); err != nil {
+		return fmt.Errorf("docker login: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "caravan up: pushing %s\n", imageURI)
+	if err := runStreaming("docker", []string{"push", imageURI}, cwd, nil); err != nil {
+		return fmt.Errorf("docker push: %w", err)
+	}
 	return nil
 }
 

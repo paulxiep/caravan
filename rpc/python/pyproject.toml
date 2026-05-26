@@ -31,7 +31,11 @@ classifiers = [
 aws = ["boto3>=1.34"]
 redis = ["redis>=5"]
 rabbit = ["pika>=1.3"]
-all = ["boto3>=1.34", "redis>=5", "pika>=1.3"]
+# Lambda dispatch (M7). client(I).method(...) when the peer table marks
+# the seam as lambda-mode uses botocore.auth.SigV4Auth to sign requests
+# against Lambda Function URLs. Lazy-imported in _proxy.py.
+lambda = ["botocore>=1.34"]
+all = ["boto3>=1.34", "redis>=5", "pika>=1.3", "botocore>=1.34"]
 
 [project.urls]
 Homepage = "https://github.com/paulxiep/caravan"

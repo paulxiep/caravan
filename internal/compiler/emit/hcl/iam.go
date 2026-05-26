@@ -181,7 +181,9 @@ func iamPolicyJSON(stmts []compiler.IAMStatement, target *compiler.Target) strin
 
 // iamResourceExpr returns the HCL expression for the policy
 // statement's Resource field. S3 buckets need both bucket and object
-// ARNs; SQS / OpenSearch return a single ARN.
+// ARNs; SQS / OpenSearch return a single ARN. Lambda invoke grants
+// (ResourceKindLambdaCall) target the function ARN; the Function URL
+// inherits authorization from the function-level policy.
 func iamResourceExpr(s compiler.IAMStatement, _ *compiler.Target) string {
 	local := terraformLocalName(s.ResourceRef)
 	switch s.ResourceKind {
@@ -195,6 +197,8 @@ func iamResourceExpr(s compiler.IAMStatement, _ *compiler.Target) string {
 		return fmt.Sprintf("[aws_opensearch_domain.%s.arn, \"${aws_opensearch_domain.%s.arn}/*\"]", local, local)
 	case compiler.ResourceStream:
 		return fmt.Sprintf("[aws_kinesis_stream.%s.arn]", local)
+	case compiler.ResourceKindLambdaCall:
+		return fmt.Sprintf("[aws_lambda_function.%s.arn]", local)
 	}
 	// Fall-through: unknown kind. Empty list — tofu plan will surface
 	// the issue. Caravan does not error here because new resource

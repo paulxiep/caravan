@@ -523,16 +523,29 @@ func validateFargateTarget(doc *ParsedDoc, diag *Diagnostics) {
 				"targets.%s.vpc.nat must be \"single\" or \"ha\" (got %q)",
 				t.Name, t.VPC.NAT)
 		}
-		hasContainerSeam := false
+		// Fargate needs at least one container-mode consumer — either a
+		// container-mode seam (peer service in its own task) or a
+		// container-mode entry (the main user-code task). Pure-Lambda +
+		// inproc-seams targets (M7's invoice-parse prod-mixed shape) have
+		// container entries even with no container seams.
+		hasContainerConsumer := false
 		for _, mode := range t.Seams {
 			if mode == SeamContainer {
-				hasContainerSeam = true
+				hasContainerConsumer = true
 				break
 			}
 		}
-		if !hasContainerSeam {
+		if !hasContainerConsumer {
+			for _, mode := range t.Entries {
+				if mode == EntryContainer {
+					hasContainerConsumer = true
+					break
+				}
+			}
+		}
+		if !hasContainerConsumer {
 			diag.Error(t.Span,
-				"targets.%s.runtime=fargate has no Fargate consumers (declare at least one seam with mode=container)",
+				"targets.%s.runtime=fargate has no Fargate consumers (declare at least one entry or seam with mode=container)",
 				t.Name)
 		}
 	}

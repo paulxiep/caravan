@@ -11,15 +11,17 @@ import "sort"
 //   - "consumer" perms for every cloud-managed resource named in a
 //     queue/stream trigger on the entry (e.g. sqs:ReceiveMessage,
 //     sqs:DeleteMessage).
+//   - "lambda invoke" perms (M7) for every seam dispatched as lambda
+//     whose impl lives inside this entry's path. The caller (entry)
+//     gets lambda:InvokeFunctionUrl on the seam's Lambda function ARN.
 //
-// Both surfaces can fire on the same entry (invoice-parse `output` lists
-// invoice_queue in both `uses:` and `triggers:` — it produces AND
-// consumes). The union is deduped + sorted per resource.
+// All surfaces can fire on the same entry. The union is deduped + sorted
+// per resource.
 //
-// Returns nil when no entry has any cloud-managed grant. The HCL emit
-// stage uses nil-ness to decide whether to emit iam.tf at all.
-func resolveIAMGrants(plan *Plan, resolved map[string]*ResolvedResource) map[string][]IAMStatement {
-	if len(plan.Entries) == 0 || len(resolved) == 0 {
+// Returns nil when no entry has any grant. The HCL emit stage uses
+// nil-ness to decide whether to emit iam.tf at all.
+func resolveIAMGrants(plan *Plan, resolved map[string]*ResolvedResource, target *Target) map[string][]IAMStatement {
+	if len(plan.Entries) == 0 {
 		return nil
 	}
 	out := map[string][]IAMStatement{}
@@ -29,12 +31,72 @@ func resolveIAMGrants(plan *Plan, resolved map[string]*ResolvedResource) map[str
 			continue
 		}
 		statements := buildEntryIAM(e, resolved)
+		// M7: append a lambda:InvokeFunctionUrl statement per Lambda
+		// seam whose path matches this entry. One statement per seam,
+		// scoped to the function's ARN (HCL emit resolves ARN via
+		// aws_lambda_function.<seam>.arn).
+		statements = append(statements, lambdaInvokeStatements(e, plan, target)...)
 		if len(statements) > 0 {
 			out[entryName] = statements
 		}
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// lambdaInvokeStatements returns one IAMStatement per Lambda seam this
+// entry calls. "Calls" resolves in two steps:
+//
+//  1. Path-match: the seam's `path:` equals the entry's `path:`. Used
+//     when caravan.yaml declares both explicitly (invoice-parse).
+//  2. Fallback: the entry is a container-mode entry in the target and
+//     no Lambda seam has an explicit path that excludes it. Used by
+//     code-rag, which declares no per-seam path (all seam impls live
+//     in the single repo-root entry).
+//
+// Statements are sorted by seam name for byte-stable HCL output.
+func lambdaInvokeStatements(e *Entry, plan *Plan, target *Target) []IAMStatement {
+	if target == nil || len(target.Seams) == 0 || e == nil {
+		return nil
+	}
+	// Only container-mode entries can invoke Lambda peers — they're the
+	// only deploy units with a task role to attach the grant to.
+	if target.Entries[e.Name] != EntryContainer {
+		return nil
+	}
+	seamNames := make([]string, 0)
+	for name, mode := range target.Seams {
+		if mode != SeamLambda {
+			continue
+		}
+		s := plan.Seams[name]
+		if s == nil {
+			continue
+		}
+		// Path-match if both are set; fallback to "any container entry"
+		// when the seam declares no path.
+		matches := false
+		switch {
+		case s.Path != "" && e.Path != "":
+			matches = s.Path == e.Path
+		default:
+			matches = true
+		}
+		if !matches {
+			continue
+		}
+		seamNames = append(seamNames, name)
+	}
+	sort.Strings(seamNames)
+	out := make([]IAMStatement, 0, len(seamNames))
+	for _, n := range seamNames {
+		out = append(out, IAMStatement{
+			ResourceRef:  n,
+			ResourceKind: ResourceKindLambdaCall,
+			Actions:      []string{"lambda:InvokeFunctionUrl"},
+		})
 	}
 	return out
 }

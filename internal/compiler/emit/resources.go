@@ -40,12 +40,12 @@ type resourceBuilder func(rr *compiler.ResolvedResource) composeService
 // resource at Phase 1" — kv, stream, llm fall here; cloud-managed
 // + by-id compositions also short-circuit before lookup.
 var resourceCatalog = map[resourceCatalogKey]resourceBuilder{
-	{compiler.ResourceBucket, compiler.VariantMinIO}:        buildMinIOService,
-	{compiler.ResourceDBSQL, compiler.VariantPostgres}:      buildPostgresService,
-	{compiler.ResourceCache, compiler.VariantRedis}:         buildRedisService,
-	{compiler.ResourceQueue, compiler.VariantRedisStreams}:  buildRedisService, // shared container
-	{compiler.ResourceQueue, compiler.VariantRabbitMQ}:      buildRabbitMQService,
-	{compiler.ResourceSearch, compiler.VariantOpenSearch}:   buildOpenSearchService,
+	{compiler.ResourceBucket, compiler.VariantMinIO}:       buildMinIOService,
+	{compiler.ResourceDBSQL, compiler.VariantPostgres}:     buildPostgresService,
+	{compiler.ResourceCache, compiler.VariantRedis}:        buildRedisService,
+	{compiler.ResourceQueue, compiler.VariantRedisStreams}: buildRedisService, // shared container
+	{compiler.ResourceQueue, compiler.VariantRabbitMQ}:     buildRabbitMQService,
+	{compiler.ResourceSearch, compiler.VariantOpenSearch}:  buildOpenSearchService,
 }
 
 // variantEngineName maps each (Type, Variant) to its compose-service

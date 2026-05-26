@@ -22,15 +22,18 @@ use std::sync::Arc;
 use serde_yaml::Value;
 
 use super::blob_store::{BlobStore, LocalFsBlobStore};
+#[cfg(any(
+    feature = "resources-aws",
+    feature = "resources-redis",
+    feature = "resources-rabbit"
+))]
 use super::queue::MessageQueue;
 use crate::provide;
 
 /// One-line resource bootstrap. Call once at process startup.
 /// `yaml_fallback` is optional — pass `None` if your app has no
 /// non-Caravan local-dev path.
-pub fn auto_register_resources(
-    yaml_fallback: Option<&Value>,
-) -> Result<(), AutoRegisterError> {
+pub fn auto_register_resources(yaml_fallback: Option<&Value>) -> Result<(), AutoRegisterError> {
     register_blob_store(yaml_fallback)?;
     register_message_queue(yaml_fallback)?;
     Ok(())
@@ -110,11 +113,7 @@ fn register_message_queue(fallback: Option<&Value>) -> Result<(), AutoRegisterEr
         // Parse the scheme without depending on the `url` crate — that's
         // a feature-gated optional dep. Scheme is `<chars>://` so a simple
         // split suffices for our routing decision.
-        let scheme = env_url
-            .split("://")
-            .next()
-            .unwrap_or("")
-            .to_lowercase();
+        let scheme = env_url.split("://").next().unwrap_or("").to_lowercase();
         match scheme.as_str() {
             "redis" | "rediss" => {
                 #[cfg(feature = "resources-redis")]
@@ -168,6 +167,7 @@ fn register_message_queue(fallback: Option<&Value>) -> Result<(), AutoRegisterEr
     Ok(())
 }
 
+#[cfg(feature = "resources-redis")]
 fn consumer_group_from_fallback(fallback: Option<&Value>) -> String {
     let default = "caravan-workers".to_string();
     let Some(fb) = fallback else {

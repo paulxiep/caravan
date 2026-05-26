@@ -50,11 +50,11 @@ func fargateConsumers(rp *compiler.ResolvedPlan, target *compiler.Target) []farg
 			continue
 		}
 		out = append(out, fargateConsumer{
-			Kind:        "entry",
-			Name:        name,
-			ServiceName: toDashed(name),
+			Kind:          "entry",
+			Name:          name,
+			ServiceName:   toDashed(name),
 			NeedsCloudMap: false,
-			Entry:       e,
+			Entry:         e,
 		})
 	}
 
@@ -72,11 +72,11 @@ func fargateConsumers(rp *compiler.ResolvedPlan, target *compiler.Target) []farg
 			svc = toDashed(name)
 		}
 		out = append(out, fargateConsumer{
-			Kind:        "seam",
-			Name:        name,
-			ServiceName: svc,
+			Kind:          "seam",
+			Name:          name,
+			ServiceName:   svc,
 			NeedsCloudMap: true,
-			Seam:        s,
+			Seam:          s,
 		})
 	}
 	return out

@@ -16,7 +16,7 @@ func TestResolveIAMGrants_ProducerOnly(t *testing.T) {
 	resolved := map[string]*ResolvedResource{
 		"blobs": {Name: "blobs", Type: ResourceBucket, Composition: CompositionCloudManaged},
 	}
-	got := resolveIAMGrants(plan, resolved)
+	got := resolveIAMGrants(plan, resolved, nil)
 	want := map[string][]IAMStatement{
 		"writer": {{
 			ResourceRef:  "blobs",
@@ -50,7 +50,7 @@ func TestResolveIAMGrants_ConsumerOnly(t *testing.T) {
 	resolved := map[string]*ResolvedResource{
 		"jobs": {Name: "jobs", Type: ResourceQueue, Composition: CompositionCloudManaged},
 	}
-	got := resolveIAMGrants(plan, resolved)
+	got := resolveIAMGrants(plan, resolved, nil)
 	want := map[string][]IAMStatement{
 		"reader": {{
 			ResourceRef:  "jobs",
@@ -88,7 +88,7 @@ func TestResolveIAMGrants_ProducerAndConsumer(t *testing.T) {
 	resolved := map[string]*ResolvedResource{
 		"jobs": {Name: "jobs", Type: ResourceQueue, Composition: CompositionCloudManaged},
 	}
-	got := resolveIAMGrants(plan, resolved)
+	got := resolveIAMGrants(plan, resolved, nil)
 	want := map[string][]IAMStatement{
 		"output": {{
 			ResourceRef:  "jobs",
@@ -119,7 +119,7 @@ func TestResolveIAMGrants_OssLocalSkipped(t *testing.T) {
 	resolved := map[string]*ResolvedResource{
 		"blobs": {Name: "blobs", Type: ResourceBucket, Composition: CompositionOSSLocal},
 	}
-	got := resolveIAMGrants(plan, resolved)
+	got := resolveIAMGrants(plan, resolved, nil)
 	if got != nil {
 		t.Errorf("expected nil; got %#v", got)
 	}
@@ -146,7 +146,7 @@ func TestResolveIAMGrants_MixedResources(t *testing.T) {
 		"invoice_db":    {Name: "invoice_db", Type: ResourceDBSQL, Composition: CompositionCloudManaged},
 		"invoice_queue": {Name: "invoice_queue", Type: ResourceQueue, Composition: CompositionCloudManaged},
 	}
-	got := resolveIAMGrants(plan, resolved)
+	got := resolveIAMGrants(plan, resolved, nil)
 	if len(got["processing"]) != 2 {
 		t.Fatalf("expected 2 statements (db.sql has no IAM); got %d: %#v", len(got["processing"]), got["processing"])
 	}
@@ -160,7 +160,7 @@ func TestResolveIAMGrants_MixedResources(t *testing.T) {
 
 // TestResolveIAMGrants_NoEntries returns nil cleanly.
 func TestResolveIAMGrants_NoEntries(t *testing.T) {
-	if got := resolveIAMGrants(&Plan{}, nil); got != nil {
+	if got := resolveIAMGrants(&Plan{}, nil, nil); got != nil {
 		t.Errorf("expected nil; got %#v", got)
 	}
 }

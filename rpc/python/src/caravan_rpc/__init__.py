@@ -54,7 +54,10 @@ def provide(interface_cls, impl):
     _registry.register(interface_cls, impl)
 
 
-from .resources import (
+# Resources re-export lives after `provide` (which the resource adapters
+# call internally during auto_register). E402 is suppressed because the
+# load-order dependency is structural, not stylistic.
+from .resources import (  # noqa: E402
     BlobStore,
     LocalFsBlobStore,
     MessageQueue,

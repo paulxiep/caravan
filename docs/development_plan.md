@@ -841,47 +841,57 @@ Deferred to later milestones:
 
 ### M7 — Lambda dispatch on two seams, Rust + Python (Phase 2, 3–4 sessions)
 
-**Demo.** Two seams flip to `lambda` mode across two languages:
-- **Rust:** code-rag `IntentClassifier` carved from `code-rag-engine::intent`. Pure CPU, sub-second cold start.
-- **Python:** invoice-parse `ValidateExtraction` carved from `validate_extraction()` at `services/processing/invoice_processing/validation.py:195`. Pure transforms, ~10MB slim image (no PaddleOCR/torch).
+**Status: ✅ IMPLEMENTED (2026-05-26)** — compose/HCL emit, both SDKs, both demo seams shipped and clippy/fmt/ruff-clean. AWS E2E + cold-start measurement defer to M9-cloud per the agreed scope split (no `lambda-mixed` compose variant — see "Deviations" below).
+
+**Demo (shipped).** Two seams flip to `lambda` mode across two languages:
+- **Rust:** code-rag `IntentClassifier` carved from `code-rag-engine::intent`. Pure CPU, naturally slim (no fastembed in the Lambda image — caller passes the embedding).
+- **Python:** invoice-parse `ValidateExtraction` carved from `validate_extraction()` at `services/processing/invoice_processing/validation.py:195`. Pure pydantic transforms; opt-in `lambda-slim` Dockerfile stage (no PaddleOCR/torch) bound via the new `seams.X.image_target:` yaml field.
 
 Same source, yaml flip per seam. SigV4-signed POST to Function URL with `AuthType: AWS_IAM`. Mirrors Phase 1's two-language per-seam-mode proof, now on Lambda.
 
 **Prereqs.** M4b. M7 plugs into M4b's `ComputeEmitter` interface and fills the `LambdaExecutionRole` principal-type placeholder in `iam.go` — no parallel emitter code, no revisit of M4b's files.
 
-**Work — SDK side.**
-- Rust SDK: `lambda` dispatch mode via `aws-sigv4` crate. Lambda runtime detection via `AWS_LAMBDA_RUNTIME_API`; register Lambda handler instead of axum (composes with existing `run_or_serve`). Fills the `PeerEntry::Lambda` variant that M2 left as a panic-stub forward-compat marker.
-- Python SDK: SigV4 via `botocore.auth.SigV4Auth`. Lambda detection via `AWS_LAMBDA_FUNCTION_NAME`; handler entry at `caravan_rpc.lambda_handler`. Replaces the `NotImplementedError` branch in `_proxy.py` for `mode: lambda`.
-- **Auth split**: `mode: lambda` uses SigV4 only (no bearer); `mode: http` keeps bearer. Emitter omits `CARAVAN_RPC_SHARED_SECRET` from Lambda env vars.
+**Work — SDK side (shipped).**
+- Rust SDK: `lambda` dispatch via `aws-sigv4` + `aws-credential-types` + `aws-config`. Lambda runtime detection in `run_or_serve` via `AWS_LAMBDA_RUNTIME_API`; the axum router is handed to `lambda_http::run` instead of binding TCP. `HttpAdapterFactory.construct` now takes `PeerEntry` (not `String`); the generated `<Trait>HttpClient` stores the variant and per-call branches between `dispatch_sync` (bearer) and `dispatch_sync_sigv4` (SigV4). `PeerEntry::Lambda` panic stub replaced with real dispatch. New unit test: `region_extracted_from_function_url` (`dispatch.rs`).
+- Python SDK: SigV4 via `botocore.auth.SigV4Auth` (new `[lambda]` extra; lazy-imported in `_proxy.py`). New `caravan_rpc.lambda_handler` module — Function URL event v2.0 handler, reads `CARAVAN_RPC_LAMBDA_INTERFACE` / `_IMPL` / `_INTERFACE_MODULE` env vars at cold start, dispatches per invocation. Replaces the `NotImplementedError` branch in `_proxy.py` for `mode: lambda`.
+- **Auth split**: `mode: lambda` uses SigV4 only (no bearer); `mode: http` keeps bearer. The compiler's `resolve.go` already supports omitting `CARAVAN_RPC_SHARED_SECRET` for Lambda peers; injection lands as needed.
 
-**Work — Compiler side.**
-- Add **Lambda implementation of `ComputeEmitter`** (M4b interface): emits `aws_lambda_function` (container-image source) + Function URL + per-caller `lambda:InvokeFunctionUrl` IAM grant.
-- Fill `LambdaExecutionRole` principal variant in `iam.go` (M4b left it as a typed placeholder).
-- New compose target variant: `lambda-mixed` so consumers can run locally and dispatch into real Lambda for incremental testing.
+**Work — Compiler side (shipped).**
+- New `compute_lambda.go`: `ComputeEmitter`-style emitter (`emitLambdaSeams`) called from `renderMain` whenever a target has any `SeamLambda` seam. Emits `aws_lambda_function` (container image, image URI = host entry's ECR repo + `lambda-<seam>` tag), `aws_lambda_function_url` (AuthType=AWS_IAM), shared `aws_iam_role.caravan_lambda_execution` (assume `lambda.amazonaws.com` + `AWSLambdaBasicExecutionRole` attachment), and per-seam `CARAVAN_RPC_<seam>_FUNCTION_URL` tofu output.
+- Per-caller `lambda:InvokeFunctionUrl` IAM grants: `resolve_iam.go`'s `lambdaInvokeStatements` adds one statement per Lambda seam to each container-mode entry's task role policy. `iam.go`'s `iamResourceExpr` recognizes `compiler.ResourceKindLambdaCall` to produce `[aws_lambda_function.<seam>.arn]`.
+- New yaml field `seams.X.image_target:` (optional). When set, `caravan up` builds the host entry's Dockerfile with `--target=<stage>` for the Lambda peer image and pushes it under the `lambda-<seam>` tag. Parallel to `entries.X.runtime_target`. No new structural ask on user code; user opts in by adding a multi-stage `slim` Dockerfile target.
+- `buildLambdaPeer` (`resolve.go`) emits `${aws_lambda_function_url.<seam>.function_url}` as the `function_url` placeholder; the HCL string literal's `${...}` interpolation resolves at `tofu apply` time. No more `TODO_LAMBDA_URL`.
+- Fargate validator (`normalize.go`) loosened: any container-mode entry or seam counts as a "Fargate consumer". Lets invoice-parse `prod-mixed` (Fargate entries + inproc + one Lambda seam) compile.
 
-**Work — code-rag refactor (IntentClassifier seam).**
-- Add `#[wagon] pub trait IntentClassifier` in `crates/code-rag-store/src/seams.rs` (mirroring the 4 existing seams).
-- Wrap existing `code_rag_engine::intent::IntentClassifier` struct in `LocalIntentClassifier` impl of the trait (non-WASM location — likely `code-rag-core::intent_local` or similar).
-- Feature-gate so `code-rag-engine` WASM build (`standalone_api.rs`) keeps calling the concrete struct directly; only the server path goes through the seam.
-- Flip server call sites: `src/api/handlers.rs:32-40` and `crates/code-rag-core/src/retriever.rs` (intent call sites identified in M7 prep exploration).
-- Register via `caravan_rpc::provide::<dyn IntentClassifier>(...)` in `code-rag-core/src/state.rs`.
+**Work — code-rag refactor (shipped — IntentClassifier seam).**
+- Added `#[wagon] pub trait IntentClassifier` in `crates/code-rag-store/src/seams.rs` (5th wagon trait). `code-rag-engine`'s `IntentClassifier` struct + `ClassificationResult` got `Serialize + Deserialize`; the trait's return type uses the engine type directly (no wire shim needed, mirrors `LlmClient` more than `Reranker`).
+- New `code-rag-core/src/intent_local.rs` defines `LocalIntentClassifier` wrapping the engine struct; registered via `caravan_rpc::provide::<dyn IntentClassifier>` in `code-rag-core/src/state.rs`.
+- Flipped server call site at `src/api/handlers.rs:36` to `client::<dyn IntentClassifier>().classify(...)`. **Doc correction**: dev plan claimed two server-side call sites (`handlers.rs` + `code-rag-core/src/retriever.rs`); verification at impl time found only `handlers.rs:36` calls `intent::classify` server-side. WASM bundle (`code-rag-ui::standalone_api`) uses the concrete struct directly and stays unchanged — no feature gate needed since it never went through the trait. MCP + harness still consult `state.classifier` directly (out of M7 scope; cleanup is future work).
+- New `prod-mixed` target in `code-rag/caravan.yaml`: Fargate entries + `IntentClassifier: lambda`, everything else inproc. `staging-fargate` adds `IntentClassifier: inproc` for symmetry.
 
-**Work — invoice-parse refactor (ValidateExtraction seam).**
-- Wrap `validate_extraction()` in `@wagon class ValidateExtraction` at `services/processing/invoice_processing/validation.py:195`.
-- Register `provide(ValidateExtraction, ValidateExtractionImpl())` in `worker.py` alongside existing provides.
-- Flip call site in `worker.py:205` from `validate_extraction(...)` to `client(ValidateExtraction).validate(...)`.
-- Add slim Docker build target in `services/processing/Dockerfile` excluding PaddleOCR/torch — ~10MB image footprint for the Lambda peer (vs 200MB+ for the OCR-bearing one).
+**Work — invoice-parse refactor (shipped — ValidateExtraction seam).**
+- Wrapped `validate_extraction()` with `@wagon class ValidateExtraction` + `ValidateExtractionImpl` in `services/processing/invoice_processing/validation.py:195`. Mirrors the OCRLayout precedent.
+- Registered `provide(ValidateExtraction, ValidateExtractionImpl())` in `worker.py` alongside existing provides.
+- Flipped call site at `worker.py:208` to `client(ValidateExtraction).validate(...)`.
+- Two-stage `services/processing/Dockerfile`: `processing` (default, full image with PaddleOCR/paddlex/torch) and `lambda-slim` (AWS Lambda Python base image, `--no-deps` install of `invoice_processing` to skip the heavy pip deps the seam doesn't touch). Seam yaml sets `image_target: lambda-slim`.
+- New `prod-mixed` target in `invoice-parse/caravan.yaml`: Fargate entries (processing, ingest, output) + `ValidateExtraction: lambda`, all other seams inproc.
 
-**Acceptance.**
-- `caravan compile --target=prod-mixed` emits two Lambda functions + IAM + Function URLs.
-- code-rag chat query routes intent classification through Lambda; same chunk_ids as Fargate path (byte-identical).
-- invoice-parse processing routes ValidateExtraction through Lambda; same ValidationResult as inproc path.
-- Cold-start latency observable in CloudWatch logs <2s for both Lambda functions.
-- `git diff -- crates/ src/ services/` empty between the Fargate-only and Lambda-mixed targets.
+**Acceptance (status).**
+- ✅ `caravan compile --target=prod-mixed` emits Lambda function + IAM + Function URL for both repos (verified end-to-end against the new HCL files).
+- ⏳ code-rag byte-identical chunk_ids vs Fargate path — defers to M9-cloud E2E sweep.
+- ⏳ invoice-parse byte-identical ValidationResult vs inproc path — defers to M9-cloud.
+- ⏳ Cold-start <2s in CloudWatch logs — defers to M9-cloud measurement.
+- ✅ `git diff -- crates/ src/ services/` is empty between `staging-fargate` and `prod-mixed` (yaml is the only diff). Once the M7 seam-carving commits are squashed, the diff guard becomes the steady-state acceptance.
 
-**Risk.** Per-seam slim image flavor may require a yaml schema extension (`seams.X.image_target:` for Dockerfile multi-stage selection). Mitigate via a `slim` build-target convention if the compiler shouldn't grow yaml surface.
+**Deviations from spec (intentional, agreed with user).**
+- **No `lambda-mixed` compose target.** M4b shipped `staging-fargate` without a parallel `fargate-mixed` local-compose-dispatches-to-real-Fargate variant; to preserve symmetry, M7 ships only `prod-mixed` and lets M9-cloud own all hybrid-local-to-real-AWS test variants in one sweep.
+- **Slim image strategy.** Resolved via new optional `seams.X.image_target:` yaml field (not a hardcoded `--target=slim` convention, not a synthesized Dockerfile). Users opt into a slim stage in their own Dockerfile and point Caravan at it; without the opt-in, the Lambda peer image is just the full entry image (works, slower cold-start). `caravan compile` could emit a one-line "tip" advisory; currently the user docs (post-M7) carry the recommendation instead.
+- **Pre-classify stays in caller.** The `intent::pre_classify_comparison` keyword filter (string match, no embedding) stays in `handlers.rs`; only embedding-based `classify` goes through the seam — no point round-tripping a query string over Lambda just to keyword-match.
+- **`HttpAdapterFactory.construct` signature change** (Rust SDK). Was `fn(url: String) -> ...`; now `fn(peer: PeerEntry) -> ...`. Necessary so the generated client can branch HTTP vs SigV4 internally. Affects only macro-generated code + the inline factory registrations — user code untouched.
 
-**Decision gate before M7.** Shared-secret-vs-SigV4 strategy — SigV4-only for lambda mode; bearer stays for http mode (recommend).
+**Risk (resolved).** Per-seam slim image flavor turned out to be a clean fit for the existing `runtime_target`-on-entry pattern, just extended to seams. No "user-program-code invasion" — the user owns Dockerfile content.
+
+**Decision gate (resolved).** SigV4-only for lambda mode; bearer stays for http mode. Compiler omits `CARAVAN_RPC_SHARED_SECRET` from Lambda peer env.
 
 ### M8 — Batch placement (DESCOPED)
 

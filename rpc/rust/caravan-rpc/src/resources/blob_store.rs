@@ -139,9 +139,8 @@ mod s3_impl {
                         loader = loader.endpoint_url(url);
                     }
                     if let (Some(ak), Some(sk)) = (access_key_id, secret_access_key) {
-                        let creds = aws_sdk_s3::config::Credentials::new(
-                            ak, sk, None, None, "caravan-env",
-                        );
+                        let creds =
+                            aws_sdk_s3::config::Credentials::new(ak, sk, None, None, "caravan-env");
                         loader = loader.credentials_provider(creds);
                     }
                     let cfg = loader.load().await;
