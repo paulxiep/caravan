@@ -126,6 +126,18 @@ Phase 2 closes the thesis on AWS: same source code, different yaml target, same 
 
 **Thesis empirically proven**: same source code → yaml flip from `runtime: docker-compose` to `runtime: fargate` (and `mode: container` to `mode: lambda` per seam) brings both repos up on real AWS with `caravan up`. No tofu / docker-compose commands typed by the user. See [Development Plan](docs/development_plan.md) §M9-cloud for the full landing inventory.
 
+## Next: path to MVP
+
+Phase 2 closure proves the thesis on the two controlled test repos (code-rag, invoice-parse) with Python + Rust SDKs against AWS. MVP is the next horizon — the steps that take Caravan from "thesis proven" to "usable by someone other than the author":
+
+1. **Apply and test to repos in the wild.** Both current test repos were authored alongside the compiler, so the design pressure is one-sided. MVP needs at least one external real-world repo brought into Caravan with no compiler / SDK accommodations — the strongest signal that the three-point contract (`@wagon` / `provide` / `client`) holds outside the lab.
+
+2. **More language support.** Python + Rust ship fully (`#[wagon]` proc-macro + axum + `run_or_serve` on Rust; `@wagon` decorator + FastAPI-equivalent + `lambda_handler` on Python). TypeScript and Go namespaces are squatted on PyPI / npm / crates.io / pkg.go.dev but the SDKs are stubs. MVP needs at least one of TypeScript or Go live, to verify the contract isn't an accidental Python+Rust shape.
+
+3. **Cloud-optimization-smart.** The resource model already declares explicit tiering (`db.sql: tier: prod-small`) and the per-cloud catalog tables ([AWS](docs/aws_service_groups.md) · [GCP](docs/gcp_service_groups.md) · [Azure](docs/azure_service_groups.md)) are inputs. MVP turns these into a queryable surface: per-seam cost attribution, latency estimates, what-if simulation across targets. Picking between `prod-mixed` and `prod-monolith` should be a `caravan plan --compare` view, not architect tribal knowledge.
+
+4. **UX refinement.** Current CLI is functional but PoC-shape: error messages assume the developer is also the compiler-author, the README is the only onboarding path, no `caravan init`, no inline help for `caravan.yaml` schema, no `--review-only` apply gate. MVP polishes the surface a non-author would touch first.
+
 ## Scoping documents
 
 PoC scope (latest; supersedes module/bundle vocabulary in older docs):

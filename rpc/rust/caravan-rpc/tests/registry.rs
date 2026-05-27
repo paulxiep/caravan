@@ -233,13 +233,23 @@ fn lambda_mode_override_returns_macro_generated_client() {
             function_url: "https://abc.lambda-url.us-east-1.on.aws/".to_string(),
         },
     )]);
-    provide::<dyn LambdaSeam>(Arc::new(LambdaImpl));
+    // Hold a clone of the locally-provided impl before handing one to
+    // provide(). Both Arcs point to the same underlying allocation, so
+    // pointer-equality against `client()`'s return distinguishes:
+    //   - same pointer → client() returned the locally-provided impl
+    //     (Lambda override didn't take effect — regression)
+    //   - different pointer → client() returned a different Arc, i.e.
+    //     the macro-generated Lambda adapter from the inventory factory.
+    let local: Arc<dyn LambdaSeam> = Arc::new(LambdaImpl);
+    provide::<dyn LambdaSeam>(Arc::clone(&local));
 
     let h = client::<dyn LambdaSeam>();
-    let local: Arc<dyn LambdaSeam> = Arc::new(LambdaImpl);
     let h_ptr = Arc::as_ptr(&h) as *const ();
     let local_ptr = Arc::as_ptr(&local) as *const ();
-    assert_ne!(h_ptr, local_ptr, "expected Lambda adapter, got local");
+    assert_ne!(
+        h_ptr, local_ptr,
+        "expected Lambda adapter from inventory factory, got the locally-provided impl"
+    );
 }
 
 // ---------- distinct interfaces don't collide on TypeId ----------

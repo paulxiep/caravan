@@ -60,17 +60,62 @@ impl LocalFsBlobStore {
         Ok(Self { base })
     }
 
-    fn safe_path(&self, path: &str) -> Result<PathBuf, BlobError> {
+    /// Validate that `path` resolves inside `self.base` without mutating
+    /// the filesystem. Side-effect-free; safe for read paths (get,
+    /// exists, delete on a missing file).
+    ///
+    /// Checks:
+    ///   1. No `..` substring (early reject).
+    ///   2. Walk up the joined path to the closest existing ancestor,
+    ///      canonicalize it, verify it starts with `self.base`. Defeats
+    ///      symlinks anywhere in the parent chain (canonicalize follows
+    ///      them; if the resolved ancestor escapes base, reject).
+    ///   3. If `full` itself exists, reject when its file type is a
+    ///      symlink — the parent check would otherwise pass (the parent
+    ///      is a real dir under base) while operations on `full` follow
+    ///      the symlink and escape. This is the final-component symlink
+    ///      attack vector.
+    ///
+    /// Returns the un-canonicalized `full` path so callers can `write`,
+    /// `read`, etc. against the intended location.
+    fn validated_path(&self, path: &str) -> Result<PathBuf, BlobError> {
         if path.contains("..") {
             return Err(BlobError::PathTraversal(path.to_string()));
         }
         let clean = path.trim_start_matches('/');
         let full = self.base.join(clean);
-        let parent = full.parent().unwrap_or(&full);
-        std::fs::create_dir_all(parent)?;
-        let resolved_parent = parent.canonicalize()?;
-        if !resolved_parent.starts_with(&self.base) {
+
+        // Find the closest existing ancestor (parent might not exist
+        // yet for first-write paths) and canonicalize it.
+        let mut probe = full.parent().unwrap_or(&full).to_path_buf();
+        while !probe.exists() {
+            match probe.parent() {
+                Some(p) => probe = p.to_path_buf(),
+                None => break,
+            }
+        }
+        let resolved = probe.canonicalize()?;
+        if !resolved.starts_with(&self.base) {
             return Err(BlobError::PathEscape(path.to_string()));
+        }
+
+        // Final-component symlink defense: if `full` exists and is a
+        // symlink, reject regardless of where it points.
+        if let Ok(meta) = std::fs::symlink_metadata(&full) {
+            if meta.file_type().is_symlink() {
+                return Err(BlobError::PathEscape(path.to_string()));
+            }
+        }
+        Ok(full)
+    }
+
+    /// Same as `validated_path` plus `create_dir_all` on the parent.
+    /// Only writes need this; reads stay side-effect-free via
+    /// `validated_path` directly.
+    fn prepared_write_path(&self, path: &str) -> Result<PathBuf, BlobError> {
+        let full = self.validated_path(path)?;
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent)?;
         }
         Ok(full)
     }
@@ -78,21 +123,21 @@ impl LocalFsBlobStore {
 
 impl BlobStore for LocalFsBlobStore {
     fn put(&self, path: &str, data: &[u8]) -> Result<(), BlobError> {
-        let full = self.safe_path(path)?;
+        let full = self.prepared_write_path(path)?;
         std::fs::write(full, data)?;
         Ok(())
     }
 
     fn get(&self, path: &str) -> Result<Vec<u8>, BlobError> {
-        Ok(std::fs::read(self.safe_path(path)?)?)
+        Ok(std::fs::read(self.validated_path(path)?)?)
     }
 
     fn exists(&self, path: &str) -> Result<bool, BlobError> {
-        Ok(self.safe_path(path)?.exists())
+        Ok(self.validated_path(path)?.exists())
     }
 
     fn delete(&self, path: &str) -> Result<(), BlobError> {
-        let full = self.safe_path(path)?;
+        let full = self.validated_path(path)?;
         if full.exists() {
             std::fs::remove_file(full)?;
         }

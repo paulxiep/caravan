@@ -3,11 +3,19 @@
 //! in the Python SDK.
 //!
 //! Env-var routing:
-//! - BlobStore:
-//!   - `S3_ENDPOINT_URL` set → S3BlobStore against MinIO (oss-local).
-//!   - `S3_BUCKET` set without endpoint → S3BlobStore against real AWS.
-//!   - neither → LocalFs from yaml fallback (best-effort).
-//! - MessageQueue:
+//! - BlobStore (marker-driven so the caller's compose / HCL emit
+//!   declares intent unambiguously; defeats the silent-fallback footgun):
+//!   - `CARAVAN_BLOB_BACKEND=s3` → S3BlobStore via
+//!     `S3BlobStore::from_env()` (consumes `S3_BUCKET` +
+//!     optional `S3_ENDPOINT_URL` / `AWS_*`). Loud-fails when
+//!     `S3_BUCKET` is unset.
+//!   - `CARAVAN_BLOB_BACKEND=local-fs` → LocalFsBlobStore at
+//!     yaml_fallback's `blob_storage.base_path` (or `/data/blobs`
+//!     default). Skips S3 even when `S3_ENDPOINT_URL` is set —
+//!     the "MinIO emitted but skipped" oss-local case.
+//!   - unset → consult `yaml_fallback` (non-caravan local-dev).
+//! - MessageQueue (URL-scheme routing — no marker needed since the
+//!   scheme is unambiguous):
 //!   - `QUEUE_URL` scheme `redis(s)://` → RedisStreamQueue.
 //!   - `QUEUE_URL` scheme `amqp(s)://` → RabbitMQQueue.
 //!   - `QUEUE_URL` scheme `http(s)://` → SqsQueue.
