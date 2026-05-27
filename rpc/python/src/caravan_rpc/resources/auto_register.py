@@ -59,12 +59,29 @@ def auto_register_resources(yaml_fallback: dict | None = None) -> None:
 
 
 def _register_blob_store(fallback: dict | None) -> None:
-    # Env-var path: S3_ENDPOINT_URL → MinIO; bare S3_BUCKET → real AWS.
-    if os.environ.get("S3_ENDPOINT_URL") or os.environ.get("S3_BUCKET"):
+    # Caravan-emitted explicit marker: `CARAVAN_BLOB_BACKEND` declares
+    # which impl the caller's compose/HCL emit intends. With backend=s3
+    # the SDK asserts S3_BUCKET is set — catches the "user forgot
+    # .env.hybrid from tofu output" footgun loudly at startup instead of
+    # silently masquerading cloud-managed as LocalFs. With backend=local-fs
+    # the SDK skips S3 entirely (oss-local "MinIO emitted but skipped").
+    # No marker → fall through to yaml_fallback (non-caravan local dev).
+    backend = os.environ.get("CARAVAN_BLOB_BACKEND")
+    if backend == "s3":
+        if not os.environ.get("S3_BUCKET"):
+            raise ValueError(
+                "CARAVAN_BLOB_BACKEND=s3 but S3_BUCKET is unset; "
+                "did you forget to populate .env.hybrid from `tofu output -json`? "
+                "(`caravan up` auto-generates it.)"
+            )
         provide(BlobStore, S3BlobStore.from_env())
         return
+    if backend == "local-fs":
+        base = _yaml_blob_base(fallback) or "/data/blobs"
+        provide(BlobStore, LocalFsBlobStore(base))
+        return
 
-    # YAML fallback.
+    # No marker — non-caravan local dev path; consult yaml_fallback only.
     if not fallback:
         return
     blob = fallback.get("blob_storage")
@@ -83,6 +100,21 @@ def _register_blob_store(fallback: dict | None) -> None:
             BlobStore,
             S3BlobStore(bucket=bucket, region=blob.get("region")),
         )
+
+
+def _yaml_blob_base(fallback: dict | None) -> str | None:
+    """Pull `blob_storage.base_path` from the user's YAML fallback config,
+    if present and the type is local_fs. Returns None otherwise.
+    """
+    if not fallback:
+        return None
+    blob = fallback.get("blob_storage")
+    if not isinstance(blob, dict):
+        return None
+    if blob.get("type") != "local_fs":
+        return None
+    base = blob.get("base_path")
+    return base if isinstance(base, str) and base else None
 
 
 def _register_message_queue(fallback: dict | None) -> None:

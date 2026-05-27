@@ -25,7 +25,7 @@ import (
 // Outputs added: CLUSTER_NAME, CLOUD_MAP_NAMESPACE_ID, and per-seam
 // CARAVAN_RPC_<name>_URL — though peer URLs are typically consumed from
 // CARAVAN_RPC_PEERS directly, the outputs are useful for debugging.
-func emitFargateCompute(body *hclwrite.Body, rp *compiler.ResolvedPlan, target *compiler.Target, outputs map[string]string) {
+func emitFargateCompute(body *hclwrite.Body, rp *compiler.ResolvedPlan, target *compiler.Target, perEntryBindings map[string][]EnvBinding, outputs map[string]string) {
 	app := rp.Plan.Name
 
 	emitECSCluster(body, app, target, outputs)
@@ -42,12 +42,33 @@ func emitFargateCompute(body *hclwrite.Body, rp *compiler.ResolvedPlan, target *
 	hostEntry := pickFargateHostEntry(rp, target)
 
 	for _, c := range consumers {
-		emitConsumerTaskDef(body, app, target, c, hostEntry, rp)
+		emitConsumerLogGroup(body, target, c)
+		emitConsumerTaskDef(body, app, target, c, hostEntry, rp, perEntryBindings, outputs)
 		if c.NeedsCloudMap {
 			emitCloudMapService(body, c)
 		}
 		emitConsumerService(body, target, c)
 	}
+}
+
+// emitConsumerLogGroup writes one aws_cloudwatch_log_group per Fargate
+// consumer. AmazonECSTaskExecutionRolePolicy grants the execution role
+// `logs:CreateLogStream` + `logs:PutLogEvents` but NOT
+// `logs:CreateLogGroup`, so we can't lean on awslogs-driver's
+// `awslogs-create-group=true` — that would 403 at task-start. Pre-
+// creating the group via HCL solves it; the task def references the
+// group by name, and the awslogs driver only needs the cheaper
+// per-stream permissions.
+//
+// Retention is left unspecified (logs persist indefinitely). Tighten
+// here in v1 if cost becomes a concern.
+func emitConsumerLogGroup(body *hclwrite.Body, target *compiler.Target, c fargateConsumer) {
+	local := consumerLocal(c)
+	groupName := fmt.Sprintf("/ecs/caravan-%s-%s", toDashed(target.Name), toDashed(c.Name))
+	b := body.AppendNewBlock("resource", []string{"aws_cloudwatch_log_group", local + "_logs"})
+	bb := b.Body()
+	bb.SetAttributeValue("name", cty.StringVal(groupName))
+	body.AppendNewline()
 }
 
 // emitECSCluster writes one aws_ecs_cluster per target. Cluster name
@@ -172,11 +193,42 @@ func pickFargateHostEntry(rp *compiler.ResolvedPlan, target *compiler.Target) *c
 	return nil
 }
 
+// fargateSeamHostEntry returns the entry whose image a container-mode
+// seam peer reuses on a Fargate target. Mirrors compose.go's
+// pickSeamHostEntry resolution order:
+//
+//  1. Path-match: alphabetically-first container-mode entry whose
+//     `path:` equals the seam's path (multi-entry repos like
+//     invoice-parse where each entry has its own directory).
+//  2. Fallback: alphabetically-first container-mode entry in the target
+//     (single-entry repos where seam.Path was defaulted to the entry's
+//     path by defaultSeamPaths).
+//
+// Returns nil when no container entry exists — caller falls back to
+// the seam's own name (treated as a missing-binding signal).
+func fargateSeamHostEntry(rp *compiler.ResolvedPlan, target *compiler.Target, seam *compiler.Seam) *compiler.Entry {
+	if rp == nil || rp.Plan == nil || target == nil || seam == nil {
+		return nil
+	}
+	if seam.Path != "" {
+		for _, name := range sortedKeysEntries(target) {
+			if target.Entries[name] != compiler.EntryContainer {
+				continue
+			}
+			e := rp.Plan.Entries[name]
+			if e != nil && e.Path == seam.Path {
+				return e
+			}
+		}
+	}
+	return pickFargateHostEntry(rp, target)
+}
+
 // emitConsumerTaskDef writes one aws_ecs_task_definition per consumer.
 // All consumers share the per-target execution role; per-entry task
 // roles attach when iam.go emitted one (i.e. the entry has IAMGrants).
 // Seams use the host entry's task role.
-func emitConsumerTaskDef(body *hclwrite.Body, app string, target *compiler.Target, c fargateConsumer, hostEntry *compiler.Entry, rp *compiler.ResolvedPlan) {
+func emitConsumerTaskDef(body *hclwrite.Body, app string, target *compiler.Target, c fargateConsumer, hostEntry *compiler.Entry, rp *compiler.ResolvedPlan, perEntryBindings map[string][]EnvBinding, outputs map[string]string) {
 	local := consumerLocal(c)
 	family := fmt.Sprintf("caravan-%s-%s", toDashed(target.Name), toDashed(c.Name))
 
@@ -209,7 +261,7 @@ func emitConsumerTaskDef(body *hclwrite.Body, app string, target *compiler.Targe
 	bb.SetAttributeRaw("execution_role_arn", rawHCL("aws_iam_role.caravan_execution.arn"))
 	bb.SetAttributeRaw("task_role_arn", rawHCL(taskRoleRef))
 
-	containerDef := containerDefinition(c, imageRef, rp, app, target)
+	containerDef := containerDefinition(c, imageRef, rp, app, target, perEntryBindings, outputs)
 	bb.SetAttributeRaw("container_definitions", rawHCL("jsonencode("+containerDef+")"))
 
 	body.AppendNewline()
@@ -218,10 +270,10 @@ func emitConsumerTaskDef(body *hclwrite.Body, app string, target *compiler.Targe
 // containerDefinition builds the JSON object for the task def's
 // containerDefinitions field. Returns an HCL-friendly object literal
 // (the wrapping `jsonencode(...)` is added by the caller).
-func containerDefinition(c fargateConsumer, imageRef string, rp *compiler.ResolvedPlan, app string, target *compiler.Target) string {
+func containerDefinition(c fargateConsumer, imageRef string, rp *compiler.ResolvedPlan, app string, target *compiler.Target, perEntryBindings map[string][]EnvBinding, outputs map[string]string) string {
 	containerName := toDashed(c.Name)
 
-	envEntries := containerEnvEntries(c, rp)
+	envEntries := containerEnvEntries(c, rp, target, perEntryBindings, outputs)
 
 	var b strings.Builder
 	b.WriteString("[{\n")
@@ -244,10 +296,14 @@ func containerDefinition(c fargateConsumer, imageRef string, rp *compiler.Resolv
 	b.WriteString("\n    logConfiguration = {")
 	b.WriteString("\n      logDriver = \"awslogs\"")
 	b.WriteString("\n      options = {")
+	// Log group is pre-created via emitConsumerLogGroup so the
+	// execution role only needs CreateLogStream + PutLogEvents (covered
+	// by AmazonECSTaskExecutionRolePolicy). Don't set
+	// awslogs-create-group=true — that would require CreateLogGroup at
+	// task-start, which the managed policy doesn't grant.
 	b.WriteString(fmt.Sprintf("\n        \"awslogs-group\" = \"/ecs/caravan-%s-%s\"", toDashed(target.Name), toDashed(c.Name)))
 	b.WriteString(fmt.Sprintf("\n        \"awslogs-region\" = %q", target.Region))
 	b.WriteString("\n        \"awslogs-stream-prefix\" = \"caravan\"")
-	b.WriteString("\n        \"awslogs-create-group\" = \"true\"")
 	b.WriteString("\n      }")
 	b.WriteString("\n    }")
 	b.WriteString("\n  }]")
@@ -264,9 +320,21 @@ type envEntry struct {
 }
 
 // containerEnvEntries assembles the env-vars a Fargate container needs:
-// CARAVAN_RPC_PEERS, CARAVAN_RPC_ROLE (peers only), and resource
-// endpoint env vars derived from rp.ResourceEnvVars.
-func containerEnvEntries(c fargateConsumer, rp *compiler.ResolvedPlan) []envEntry {
+//
+//   - CARAVAN_RPC_PEERS (caravan-internal peer table)
+//   - CARAVAN_RPC_ROLE (peers only — caravan-internal dispatch hint)
+//   - resource endpoint env vars from rp.ResourceEnvVars (DATABASE_URL,
+//     S3_BUCKET, etc.) — rewritten to HCL refs when cloud-managed
+//   - declared secrets + env_file passthroughs + base compose
+//     `environment:` passthroughs, sourced from perEntryBindings
+//     (computed by ComputeBindings, threaded in from the compile flow).
+//
+// Fargate containers have no shell layer to expand compose-style
+// `${VAR}` passthroughs at runtime, so every value the user expects
+// to see in env must be baked into the task def at apply time. The
+// binding pipeline produces either a literal string (inlined) or a
+// `var.X` reference (tofu fills it from TF_VAR_X at apply time).
+func containerEnvEntries(c fargateConsumer, rp *compiler.ResolvedPlan, target *compiler.Target, perEntryBindings map[string][]EnvBinding, outputs map[string]string) []envEntry {
 	out := []envEntry{}
 
 	if rp.PeersJSON != "" {
@@ -287,38 +355,43 @@ func containerEnvEntries(c fargateConsumer, rp *compiler.ResolvedPlan) []envEntr
 		})
 	}
 
-	// Resource env vars per consumer's owning entry. For entries, use
-	// own name; for seams, use the host entry's vars (the seam shares
-	// the entry's image so the chat binary expects the same env shape).
+	// Host-entry resolution: entries use their own name; seams resolve
+	// to the host entry whose image they reuse (deterministic — path-
+	// match first, alphabetical container-entry fallback). Same key drives
+	// both resource env vars AND the user-app env bindings.
 	envSource := c.Name
 	if c.Kind == "seam" {
-		// Seams aren't keyed in ResourceEnvVars (it's per-entry). The
-		// peer process running the chat binary needs the same resource
-		// env vars as chat, since run_or_serve initializes the same
-		// caravan_rpc::resources backend. Look up the host entry's vars.
-		if rp.ResourceEnvVars != nil {
-			for ent := range rp.ResourceEnvVars {
-				envSource = ent
-				break
-			}
+		if host := fargateSeamHostEntry(rp, target, c.Seam); host != nil {
+			envSource = host.Name
 		}
 	}
+
+	// Resource env vars per host entry.
 	if vars, ok := rp.ResourceEnvVars[envSource]; ok {
 		for k, v := range vars {
-			// TODO(M9-cloud): resource env vars carry compose-style `${VAR}`
-			// passthrough strings (resolved by docker compose at run time
-			// from a tofu-output-derived .env file). For Fargate, the
-			// container has no shell layer — the literal `${...}` string
-			// would land in the env unchanged. M9-cloud must rewrite these
-			// to direct HCL references (e.g. value = aws_db_instance.X.endpoint)
-			// so the task def evaluates them at tofu apply time. code-rag's
-			// staging-fargate declares no resources so this path is never
-			// hit at M4b; first real exercise is invoice-parse on Fargate.
-			// See development_plan.md M9-cloud "Fargate × cloud-managed-resource
-			// cross-product" work item.
 			out = append(out, envEntry{
 				Name:  k,
-				Value: fmt.Sprintf("%q", v),
+				Value: taskDefEnvValue(k, v, outputs),
+			})
+		}
+	}
+
+	// User-app env bindings (declared secrets + env_file passthroughs +
+	// environment block passthroughs). Bindings are computed per host
+	// entry; seam consumers reuse the host entry's bindings since the
+	// peer process runs the same image with the same env-var expectations.
+	for _, b := range perEntryBindings[envSource] {
+		if b.Literal != "" {
+			out = append(out, envEntry{
+				Name:  b.Key,
+				Value: fmt.Sprintf("%q", b.Literal),
+			})
+			continue
+		}
+		if b.VarName != "" {
+			out = append(out, envEntry{
+				Name:  b.Key,
+				Value: "var." + b.VarName,
 			})
 		}
 	}
@@ -326,6 +399,46 @@ func containerEnvEntries(c fargateConsumer, rp *compiler.ResolvedPlan) []envEntr
 	// Stable order.
 	sortEnvEntries(out)
 	return out
+}
+
+// taskDefEnvValue returns the HCL expression to use as a Fargate task-def
+// env-var value. For cloud-managed resources (rp.ResourceEnvVars holds a
+// compose-style `${VAR}` passthrough), it returns the matching HCL ref
+// from the outputs map (which evaluates at tofu apply time). For everything
+// else, the value is wrapped as a quoted HCL string literal — same as
+// before.
+//
+// The outputs map is built by the per-resource emitters in resources.go;
+// each entry maps an env-var name to an HCL expression. When the
+// passthrough value is `${VAR}` and outputs[VAR] exists, the HCL ref
+// supersedes the literal text.
+func taskDefEnvValue(k, v string, outputs map[string]string) string {
+	if isComposePassthrough(v) {
+		varName := v[2 : len(v)-1]
+		if ref, ok := outputs[varName]; ok && ref != "" {
+			return ref
+		}
+	}
+	return fmt.Sprintf("%q", v)
+}
+
+// isComposePassthrough reports whether v is a bare compose interpolation
+// reference of the form `${NAME}`. We rewrite these on Fargate task defs;
+// everything else stays as a literal string.
+func isComposePassthrough(v string) bool {
+	if len(v) < 4 {
+		return false
+	}
+	if v[0] != '$' || v[1] != '{' || v[len(v)-1] != '}' {
+		return false
+	}
+	for i := 2; i < len(v)-1; i++ {
+		c := v[i]
+		if c == '$' || c == '{' || c == '}' {
+			return false
+		}
+	}
+	return true
 }
 
 func sortEnvEntries(s []envEntry) {

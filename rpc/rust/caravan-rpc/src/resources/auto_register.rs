@@ -50,23 +50,44 @@ pub enum AutoRegisterError {
 }
 
 fn register_blob_store(fallback: Option<&Value>) -> Result<(), AutoRegisterError> {
-    // Env path: S3_ENDPOINT_URL → MinIO; bare S3_BUCKET → real AWS.
-    let has_endpoint = std::env::var("S3_ENDPOINT_URL").is_ok();
-    let has_bucket = std::env::var("S3_BUCKET").is_ok();
-    if has_endpoint || has_bucket {
-        #[cfg(feature = "resources-aws")]
-        {
-            let s3 = super::blob_store::S3BlobStore::from_env()
+    // Caravan-emitted explicit marker: `CARAVAN_BLOB_BACKEND` declares
+    // which impl the caller's compose/HCL emit intends. With backend=s3
+    // we assert S3_BUCKET is set — catches the "user forgot .env.hybrid
+    // from tofu output" footgun loudly at startup. With backend=local-fs
+    // we skip S3 entirely (oss-local "MinIO emitted but skipped"). No
+    // marker → consult yaml_fallback (non-caravan local-dev path).
+    match std::env::var("CARAVAN_BLOB_BACKEND").ok().as_deref() {
+        Some("s3") => {
+            if std::env::var("S3_BUCKET").is_err() {
+                return Err(AutoRegisterError::BlobStore(
+                    "CARAVAN_BLOB_BACKEND=s3 but S3_BUCKET is unset; did you forget \
+                     to populate .env.hybrid from `tofu output -json`? \
+                     (`caravan up` auto-generates it.)"
+                        .into(),
+                ));
+            }
+            #[cfg(feature = "resources-aws")]
+            {
+                let s3 = super::blob_store::S3BlobStore::from_env()
+                    .map_err(|e| AutoRegisterError::BlobStore(e.to_string()))?;
+                provide::<dyn BlobStore>(Arc::new(s3));
+                return Ok(());
+            }
+            #[cfg(not(feature = "resources-aws"))]
+            {
+                return Err(AutoRegisterError::BlobStore(
+                    "CARAVAN_BLOB_BACKEND=s3 but caravan-rpc built without `resources-aws` feature".into(),
+                ));
+            }
+        }
+        Some("local-fs") => {
+            let base = yaml_blob_base(fallback).unwrap_or_else(|| "/data/blobs".into());
+            let store = LocalFsBlobStore::new(&base)
                 .map_err(|e| AutoRegisterError::BlobStore(e.to_string()))?;
-            provide::<dyn BlobStore>(Arc::new(s3));
+            provide::<dyn BlobStore>(Arc::new(store));
             return Ok(());
         }
-        #[cfg(not(feature = "resources-aws"))]
-        {
-            return Err(AutoRegisterError::BlobStore(
-                "S3_BUCKET/S3_ENDPOINT_URL set but caravan-rpc built without `resources-aws` feature".into(),
-            ));
-        }
+        _ => {}
     }
 
     // YAML fallback.
@@ -178,4 +199,18 @@ fn consumer_group_from_fallback(fallback: Option<&Value>) -> String {
         .and_then(Value::as_str)
         .map(String::from)
         .unwrap_or(default)
+}
+
+/// Pulls `blob_storage.base_path` from the user's YAML fallback config
+/// when type=local_fs. Returns None otherwise. Used by the
+/// CARAVAN_BLOB_BACKEND=local-fs path to find the on-disk root.
+fn yaml_blob_base(fallback: Option<&Value>) -> Option<String> {
+    let fb = fallback?;
+    let blob = fb.get("blob_storage")?;
+    if blob.get("type").and_then(Value::as_str)? != "local_fs" {
+        return None;
+    }
+    blob.get("base_path")
+        .and_then(Value::as_str)
+        .map(String::from)
 }

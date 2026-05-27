@@ -183,6 +183,106 @@ func emitRouteTables(body *hclwrite.Body, app, target string) {
 	}
 }
 
+// emitFargateResourcesSupport writes the Fargate-side scaffolding for
+// VPC-anchored cloud-managed resources (RDS, ElastiCache). Called from
+// renderMain after emitVPC when the target declares a db.sql or cache
+// resource. Three emits:
+//
+//   - aws_security_group.caravan_resources — ingress from the tasks SG
+//     on whichever ports are needed (5432 for RDS, 6379 for cache).
+//   - aws_db_subnet_group.caravan_resources — spans the two private
+//     subnets, consumed by RDS (db_subnet_group_name).
+//   - aws_elasticache_subnet_group.caravan_resources — same, consumed by
+//     ElastiCache (subnet_group_name).
+//
+// Resources reach this SG / subnet group via the resourceEmitOpts flow in
+// hcl.go::renderMain (which threads "caravan_resources" into emitDBSQL +
+// emitCache when target.Runtime == Fargate).
+func emitFargateResourcesSupport(body *hclwrite.Body, app, target string, hasDB, hasCache bool) {
+	if !hasDB && !hasCache {
+		return
+	}
+	emitFargateResourcesSG(body, app, target, hasDB, hasCache)
+	if hasDB {
+		emitDBSubnetGroup(body, app, target)
+	}
+	if hasCache {
+		emitCacheSubnetGroup(body, app, target)
+	}
+}
+
+// emitFargateResourcesSG writes the shared SG for VPC-anchored cloud
+// resources on a Fargate target. Ingress is restricted to the tasks SG
+// (intra-VPC) on the per-engine port(s); egress is left open for AWS-API
+// callbacks. Replaces the hybrid-dev laptop-IP SG (`caravan_dev`) on
+// Fargate paths — tasks reach resources from inside the VPC, no laptop
+// ingress needed.
+func emitFargateResourcesSG(body *hclwrite.Body, app, target string, hasDB, hasCache bool) {
+	awsName := fmt.Sprintf("caravan-%s-%s-resources", toDashed(app), toDashed(target))
+	b := body.AppendNewBlock("resource", []string{"aws_security_group", "caravan_resources"})
+	bb := b.Body()
+	bb.SetAttributeValue("name", cty.StringVal(awsName))
+	bb.SetAttributeValue("description", cty.StringVal("Fargate-resource ingress from caravan_tasks on RDS/ElastiCache ports"))
+	bb.SetAttributeRaw("vpc_id", rawHCL("aws_vpc.caravan.id"))
+
+	if hasDB {
+		ig := bb.AppendNewBlock("ingress", nil).Body()
+		ig.SetAttributeValue("description", cty.StringVal("postgres from tasks"))
+		ig.SetAttributeValue("from_port", cty.NumberIntVal(5432))
+		ig.SetAttributeValue("to_port", cty.NumberIntVal(5432))
+		ig.SetAttributeValue("protocol", cty.StringVal("tcp"))
+		ig.SetAttributeRaw("security_groups", rawHCL("[aws_security_group.caravan_tasks.id]"))
+	}
+	if hasCache {
+		ig := bb.AppendNewBlock("ingress", nil).Body()
+		ig.SetAttributeValue("description", cty.StringVal("redis from tasks"))
+		ig.SetAttributeValue("from_port", cty.NumberIntVal(6379))
+		ig.SetAttributeValue("to_port", cty.NumberIntVal(6379))
+		ig.SetAttributeValue("protocol", cty.StringVal("tcp"))
+		ig.SetAttributeRaw("security_groups", rawHCL("[aws_security_group.caravan_tasks.id]"))
+	}
+
+	eg := bb.AppendNewBlock("egress", nil).Body()
+	eg.SetAttributeValue("from_port", cty.NumberIntVal(0))
+	eg.SetAttributeValue("to_port", cty.NumberIntVal(0))
+	eg.SetAttributeValue("protocol", cty.StringVal("-1"))
+	eg.SetAttributeValue("cidr_blocks", cty.ListVal([]cty.Value{cty.StringVal("0.0.0.0/0")}))
+
+	bb.SetAttributeValue("tags", cty.MapVal(map[string]cty.Value{
+		"Name": cty.StringVal(awsName),
+	}))
+	body.AppendNewline()
+}
+
+// emitDBSubnetGroup writes aws_db_subnet_group.caravan_resources spanning
+// the VPC's two private subnets. RDS uses this to place its instances
+// inside the VPC (publicly_accessible=false on Fargate).
+func emitDBSubnetGroup(body *hclwrite.Body, app, target string) {
+	awsName := fmt.Sprintf("caravan-%s-%s-db", toDashed(app), toDashed(target))
+	b := body.AppendNewBlock("resource", []string{"aws_db_subnet_group", "caravan_resources"})
+	bb := b.Body()
+	bb.SetAttributeValue("name", cty.StringVal(awsName))
+	bb.SetAttributeValue("description", cty.StringVal("Caravan Fargate RDS subnet group (private subnets)"))
+	bb.SetAttributeRaw("subnet_ids", rawHCL("[aws_subnet.caravan_private_a.id, aws_subnet.caravan_private_b.id]"))
+	bb.SetAttributeValue("tags", cty.MapVal(map[string]cty.Value{
+		"Name": cty.StringVal(awsName),
+	}))
+	body.AppendNewline()
+}
+
+// emitCacheSubnetGroup writes aws_elasticache_subnet_group.caravan_resources
+// spanning the VPC's two private subnets. ElastiCache uses this via the
+// subnet_group_name attribute on a Fargate target.
+func emitCacheSubnetGroup(body *hclwrite.Body, app, target string) {
+	awsName := fmt.Sprintf("caravan-%s-%s-cache", toDashed(app), toDashed(target))
+	b := body.AppendNewBlock("resource", []string{"aws_elasticache_subnet_group", "caravan_resources"})
+	bb := b.Body()
+	bb.SetAttributeValue("name", cty.StringVal(awsName))
+	bb.SetAttributeValue("description", cty.StringVal("Caravan Fargate ElastiCache subnet group (private subnets)"))
+	bb.SetAttributeRaw("subnet_ids", rawHCL("[aws_subnet.caravan_private_a.id, aws_subnet.caravan_private_b.id]"))
+	body.AppendNewline()
+}
+
 // emitTasksSecurityGroup writes the SG shared by all Fargate tasks for
 // this target. Ingress: from self (intra-SG) on port 8080 — caravan-rpc
 // HTTP dispatch between tasks via Cloud Map. Egress: anywhere — needed

@@ -33,6 +33,7 @@ func applyDefaults(doc *ParsedDoc) {
 	defaulters := []func(*ParsedDoc){
 		defaultOutputDir,
 		defaultSeamServiceNames,
+		defaultSeamPaths,
 		defaultHybridTargetFields,
 		defaultFargateTargetFields,
 	}
@@ -64,6 +65,36 @@ func defaultSeamServiceNames(doc *ParsedDoc) {
 	for _, s := range doc.Seams {
 		if s.ServiceName == "" {
 			s.ServiceName = kebabCase(s.Name)
+		}
+	}
+}
+
+// defaultSeamPaths fills Seam.Path for single-entry plans where the seam
+// omits `path:` in yaml. The seam-path field is the load-bearing key the
+// resolve phase uses to identify which entry "owns" a seam (i.e. whose
+// peer-table the seam belongs to). Multi-entry plans (invoice-parse)
+// declare path explicitly per seam; single-entry plans (code-rag) can
+// leave it empty because the assignment is unambiguous. Without this
+// default, resolve.go::entriesUsingSeams returns empty for code-rag and
+// the consumer entry never gets CARAVAN_RPC_PEERS injected.
+//
+// Plans with multiple entries and any path-less seam are left as-is —
+// the user must declare paths explicitly there; validateSeamUses /
+// runtime errors surface the ambiguity rather than guessing.
+func defaultSeamPaths(doc *ParsedDoc) {
+	if len(doc.Entries) != 1 {
+		return
+	}
+	var soleEntryPath string
+	for _, e := range doc.Entries {
+		soleEntryPath = e.Path
+	}
+	if soleEntryPath == "" {
+		return
+	}
+	for _, s := range doc.Seams {
+		if s.Path == "" {
+			s.Path = soleEntryPath
 		}
 	}
 }

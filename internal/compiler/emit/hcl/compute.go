@@ -16,10 +16,10 @@ import (
 // dispatch already accepts the new principal kind; resolve.go's
 // peerBuilders already accepts a new dispatch mode. The abstraction
 // breakpoint for "add a placement" is small by design.
-func emitComputeForTarget(body *hclwrite.Body, rp *compiler.ResolvedPlan, target *compiler.Target, outputs map[string]string) {
+func emitComputeForTarget(body *hclwrite.Body, rp *compiler.ResolvedPlan, target *compiler.Target, perEntryBindings map[string][]EnvBinding, outputs map[string]string) {
 	switch target.Runtime {
 	case compiler.RuntimeFargate:
-		emitFargateCompute(body, rp, target, outputs)
+		emitFargateCompute(body, rp, target, perEntryBindings, outputs)
 		// case compiler.RuntimeLambda:
 		//     emitLambdaCompute(body, rp, target, outputs)   // M7
 	}

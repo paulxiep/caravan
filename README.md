@@ -58,8 +58,10 @@ The compiler writes per-target artifacts to `<output_dir>/<target>/generated/`. 
 | **M5** | 2026-05-21 | code-rag full Caravan: 4 seams × 4 targets, per-seam mode flips independent |
 | **M6** | 2026-05-21 | invoice-parse full Caravan: 3 seams × 4 targets, RabbitMQ composition flip |
 | **M9 (Phase 1 close)** | 2026-05-21 | Multi-unit deployment, cross-target parity proven on both repos |
+| **M4-cloud / M7** | 2026-05-26 | HCL emit + cloud-managed resources (M4-cloud); Lambda placement axis (M7) |
+| **M9-cloud (Phase 2 close)** | 2026-05-27 | Real AWS apply on both repos × prod-mixed + prod-monolith; env_file passthrough; `caravan up`/`down` replaces tofu + docker-compose |
 
-**Phase 2** (M4-cloud → M7 → M9-cloud, AWS coverage) gate opens after Phase 1 publish + rewire.
+**Phase 2 closed (2026-05-27)** — see [Phase 2 close, empirical results](#phase-2-close-empirical-results-2026-05-27) below.
 
 ## Architecture
 
@@ -75,14 +77,17 @@ The compiler writes per-target artifacts to `<output_dir>/<target>/generated/`. 
 
 ## Current State
 
-- **Compiler phases 1–4 functional**: `caravan compile` writes per-target compose overrides + Python manifest patches into `<output_dir>/<target>/generated/`.
-- **Three SDK contract**: `@wagon` (declare seam), `provide` (register impl), `client` (dispatch). Same shape across Python and Rust; macros emit HTTP client + server adapters from the wagon-marked trait.
-- **Per-seam mode flips empirically independent**: code-rag's `dev-split-mixed` exercises Embedder + Reranker simultaneously as container peers while VectorReader + LlmClient stay inproc.
+- **Compiler phases 1–5 functional**: `caravan compile` writes per-target compose overrides, HCL artifacts (`main.tf`/`backend.tf`/`versions.tf`/`iam.tf`), the `caravan.tfwiring.json` sidecar manifest, manifest patches (requirements.txt / Cargo.toml), and Lambda build overrides into `<output_dir>/<target>/generated/`.
+- **`caravan up` / `caravan down` replace tofu + docker-compose** for every target. Single entry point: builds + pushes ECR images, runs `tofu init/apply` for Fargate / Lambda targets; runs `docker compose -f base -f override --profile app up -d --build` for compose targets. Users never type `tofu` or `docker compose` directly. HCL on-disk stays reviewable between `caravan compile` and `caravan up` (emit/apply split).
+- **Three SDK contract**: `@wagon` (declare seam), `provide` (register impl), `client` (dispatch). Same shape across Python and Rust; macros emit HTTP client + server adapters from the wagon-marked trait. SDK contract is closed — new capabilities ship as compiler-emitted artifacts, never as new user-repo files/flags.
+- **Per-seam mode flips empirically independent**: code-rag's `dev-split-mixed` exercises Embedder + Reranker simultaneously as container peers while VectorReader + LlmClient stay inproc. Cloud equivalent: `prod-mixed` flips one seam to Lambda while keeping others inproc on Fargate.
 - **Same image, both roles**: peer services reuse the consumer's image with `CARAVAN_RPC_ROLE=peer-<Interface>`; `run_or_serve` detours into peer-serve mode based on the env var. No synthetic peer crate, no `workspace.members` surgery.
-- **Resource catalog (M4)**: Postgres, Redis, MinIO, RabbitMQ, OpenSearch containers emitted per OSS-local variant; collision detection skips duplicates when the user's hand-authored compose already publishes the same service name.
+- **Resource catalog (M4)**: Postgres, Redis, MinIO, RabbitMQ, OpenSearch containers emitted per OSS-local variant; collision detection skips duplicates when the user's hand-authored compose already publishes the same service name. M4-cloud overlays cloud-managed (real S3 / RDS / SQS / ElastiCache) onto the same keys.
 - **Composition orthogonality**: invoice-parse's `dev-rabbitmq-flip` swaps queue from `redis-streams` to `rabbitmq` via yaml composition override; the same Python `MessageQueue` ABC routes on URL scheme.
+- **Lambda placement axis (M7)**: any seam can flip to `mode: lambda`, getting an AWS Lambda function (container image source, AuthType=AWS_IAM Function URL, SigV4-signed dispatch from caller). Image is built from a slim Dockerfile stage opt-in via per-seam `image_target:` (no `--target=slim` convention, no synthesized Dockerfile).
 - **Multi-unit deployment**: entries without seams (e.g. queue-consumer Rust services) are first-class. Peer-table emission scopes to seam-owning units only; no-seam units don't carry spurious `CARAVAN_RPC_PEERS` + `depends_on` edges that would break `docker compose --profile <X>` runs.
 - **Explicit resource credentials**: yaml `resources.<name>.{user,password,dbname}` for kinds that need them (db.sql today). Same values feed `DATABASE_URL` + emitted container env so creds and DSNs stay in lockstep; user-authored postgres in a hand-compose can declare matching values.
+- **Env passthrough from base compose**: `caravan compile` scans each container-mode entry's `env_file:` + `environment:` block on the base compose service of the same name. `env_file:` keys and `${VAR}` interpolations become tofu variables (resolved by `caravan up` from host env); literal `environment:` values inline into the Fargate / Lambda task-def env. Zero caravan.yaml schema delta; the user's compose is the source of truth.
 - **WASM-safe SDK**: Rust `caravan-rpc` feature-gates tokio / axum / reqwest behind `default-features = ["client", "server"]` so wasm32-unknown-unknown consumers (e.g. code-rag's engine crate compiling to a static demo) build with `default-features = false`.
 
 ## Phase 1 close, empirical results (2026-05-21)
@@ -92,6 +97,34 @@ The compiler writes per-target artifacts to `<output_dir>/<target>/generated/`. 
 **invoice-parse**: 3-unit deployment (`ingest` + `processing` + `output`) declared in one caravan.yaml. On `dev-split-llm`, LLMExtraction dispatches via HTTP to a separate peer container, OCR seams stay inproc, same Python source. **End-to-end: 17 invoices enqueued → 8 HTTP dispatches to llm-extractor → 6 Excels delivered, 0 errors mid-run.**
 
 Verbatim peer log: `[caravan_rpc.serve] serving LLMExtraction on http://0.0.0.0:8080` and `172.18.0.5 - "POST /_caravan/rpc/LLMExtraction/extract HTTP/1.1" 200 -`.
+
+## Phase 2 close, empirical results (2026-05-27)
+
+Phase 2 closes the thesis on AWS: same source code, different yaml target, same `caravan up`/`down` command.
+
+**M4-cloud** (cloud-managed resource composition): caravan emits VPC + private subnets + ECS cluster + Cloud Map private DNS namespace + per-resource AWS blocks (S3 / RDS / SQS / ElastiCache / OpenSearch) + per-target IAM roles with resource-scoped grants. Hybrid-dev (compose runtime + creds_passthrough to real AWS) HCL emit verified clean; not gated for closure per the 2026-05-27 scope pivot.
+
+**M7** (Lambda placement axis): per-seam `mode: lambda` flips emit `aws_lambda_function` (container-image source, slim stage from `image_target:`), `aws_lambda_function_url` (AuthType=AWS_IAM), shared execution role. Caller-side: caravan-rpc dispatches via SigV4-signed POST when the peer-table marks the seam `lambda` mode.
+
+**M9-cloud closure — cloud applies (ap-southeast-1, account 351090596944):**
+
+| Target | Repo | Resources | Test result |
+|---|---|---|---|
+| `prod-mixed` | invoice-parse | 43 created → destroyed | Fargate processing+ingest+output tasks RUNNING; ValidateExtraction Lambda Function URL deployed; PaddleOCR loaded `PP-OCRv5_mobile_det` / `en_PP-OCRv5_mobile_rec` from env_file passthrough; S3+RDS+SQS cloud-managed; clean teardown |
+| `prod-monolith` | invoice-parse | 39 created → destroyed | 3 Fargate tasks, all 4 seams (LLMExtraction / OCRText / OCRLayout / ValidateExtraction) inproc; RDS+S3+SQS cloud-managed; processing task RUNNING; clean teardown |
+| `prod-monolith` | code-rag | 22 created → destroyed | 1 Fargate task (`code-rag-chat`), all 5 seams (Embedder / Reranker / VectorReader / LlmClient / IntentClassifier) inproc; no cloud-managed resources; task RUNNING; clean teardown |
+| `staging-fargate` | code-rag | 26 created → destroyed | M4b first Fargate-with-peer shape preserved: chat + embedder Fargate tasks both RUNNING, embedder reachable via Cloud Map (`http://embedder.code-rag.local:8080`); pre-created CloudWatch log groups (no awslogs-create-group 403); clean teardown |
+
+**Local-compose regression** (same session, post env_file passthrough implementation):
+
+| Target | Repo | Test result |
+|---|---|---|
+| `dev-bootstrap` | invoice-parse | 7 containers up; processing loaded PaddleOCR with model names from `env_file: ../.env`; postgres/redis healthy; matches B0 baseline |
+| `dev-rabbitmq-flip` | invoice-parse | Queue composition flip (redis-streams → rabbitmq) still works; all 7 services + rabbitmq up |
+
+**Env passthrough fix** (deferred test #1 closed): caravan compile now produces `caravan.tfwiring.json` sidecar listing every TF variable binding (declared secrets + env_file keys + `${VAR}` interpolations). `caravan up` resolves each from host env (loads `.env` automatically) and passes via `TF_VAR_*`. Two-phase compile-then-up design preserved; brittle HCL string-grep removed.
+
+**Thesis empirically proven**: same source code → yaml flip from `runtime: docker-compose` to `runtime: fargate` (and `mode: container` to `mode: lambda` per seam) brings both repos up on real AWS with `caravan up`. No tofu / docker-compose commands typed by the user. See [Development Plan](docs/development_plan.md) §M9-cloud for the full landing inventory.
 
 ## Scoping documents
 
@@ -123,11 +156,11 @@ Real-world design pressure for B0 / M5 / M6 / M9:
 
 | Registry | Package | Version |
 |----------|---------|---------|
-| PyPI | [`caravan-rpc`](https://pypi.org/project/caravan-rpc/) | 0.1.0 |
-| crates.io | [`caravan-rpc`](https://crates.io/crates/caravan-rpc) | 0.1.0 |
-| crates.io | [`caravan-rpc-macros`](https://crates.io/crates/caravan-rpc-macros) | 0.1.0 |
+| PyPI | [`caravan-rpc`](https://pypi.org/project/caravan-rpc/) | 0.1.1 |
+| crates.io | [`caravan-rpc`](https://crates.io/crates/caravan-rpc) | 0.1.1 |
+| crates.io | [`caravan-rpc-macros`](https://crates.io/crates/caravan-rpc-macros) | 0.1.1 |
 
-Rust and Python SDKs ship at 0.1.0 as of Phase 1 close.
+0.1.0 shipped at Phase 1 close (2026-05-21). 0.1.1 ships at Phase 2 close — the version Phase 2 ran against on real AWS. Deltas: SDK self-call guard via `CARAVAN_RPC_ROLE` (peer containers reusing the consumer image no longer loop back over HTTP); pydantic `TypeAdapter` configured with `ConfigDict(ser_json_bytes="base64", val_json_bytes="base64")` so binary payloads (PDFs, images) cross the wire intact; `CARAVAN_BLOB_BACKEND` backend-marker validation (`s3` requires `S3_BUCKET`, loud-fails on missing env; `local-fs` skips MinIO even when `S3_ENDPOINT_URL` is set).
 
 ---
 

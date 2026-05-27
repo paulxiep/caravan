@@ -77,8 +77,13 @@ func EndpointEnvVars(rr *ResolvedResource) map[string]string {
 func cloudManagedEndpoints(rr *ResolvedResource) map[string]string {
 	switch rr.Type {
 	case ResourceBucket:
+		// CARAVAN_BLOB_BACKEND asserts which impl the SDK's auto_register
+		// must wire up. With backend=s3, an empty S3_BUCKET (e.g. user
+		// forgot to populate .env.hybrid from `tofu output`) loud-fails at
+		// startup instead of silently falling back to LocalFs.
 		return map[string]string{
-			"S3_BUCKET": "${S3_BUCKET}",
+			"CARAVAN_BLOB_BACKEND": "s3",
+			"S3_BUCKET":            "${S3_BUCKET}",
 		}
 	case ResourceDBSQL:
 		return map[string]string{
@@ -103,8 +108,13 @@ func cloudManagedEndpoints(rr *ResolvedResource) map[string]string {
 func ossLocalEndpoints(rr *ResolvedResource) map[string]string {
 	switch rr.Type {
 	case ResourceBucket:
-		// S3 wire-API compat (boto3 reads S3_ENDPOINT_URL).
+		// CARAVAN_BLOB_BACKEND=local-fs tells the SDK's auto_register to
+		// use LocalFsBlobStore (not S3). MinIO env vars are emitted in
+		// case the user wants to opt into S3-against-MinIO later by
+		// flipping the marker + adding S3_BUCKET, but by default they're
+		// noise — no service consumes MinIO at M9.
 		return map[string]string{
+			"CARAVAN_BLOB_BACKEND":  "local-fs",
 			"S3_ENDPOINT_URL":       "http://minio:9000",
 			"AWS_ACCESS_KEY_ID":     "minioadmin",
 			"AWS_SECRET_ACCESS_KEY": "minioadmin",

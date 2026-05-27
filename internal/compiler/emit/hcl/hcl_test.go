@@ -66,7 +66,7 @@ func TestEmitHCL_InvoiceParseHybridDev(t *testing.T) {
 	}
 
 	outDir := t.TempDir()
-	written, err := EmitHCL(rp, outDir)
+	written, err := EmitHCL(rp, outDir, nil)
 	if err != nil {
 		t.Fatalf("EmitHCL: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestEmitHCL_OpenSearchGated(t *testing.T) {
 	t.Run("declared but unused: NOT emitted", func(t *testing.T) {
 		rp := compiler.Resolve(makePlan(nil), "hybrid-dev", &compiler.Diagnostics{})
 		outDir := t.TempDir()
-		if _, err := EmitHCL(rp, outDir); err != nil {
+		if _, err := EmitHCL(rp, outDir, nil); err != nil {
 			t.Fatal(err)
 		}
 		body, _ := os.ReadFile(filepath.Join(outDir, "main.tf"))
@@ -202,7 +202,7 @@ func TestEmitHCL_OpenSearchGated(t *testing.T) {
 	t.Run("declared and used: emitted", func(t *testing.T) {
 		rp := compiler.Resolve(makePlan([]string{"vectors"}), "hybrid-dev", &compiler.Diagnostics{})
 		outDir := t.TempDir()
-		if _, err := EmitHCL(rp, outDir); err != nil {
+		if _, err := EmitHCL(rp, outDir, nil); err != nil {
 			t.Fatal(err)
 		}
 		body, _ := os.ReadFile(filepath.Join(outDir, "main.tf"))
@@ -269,7 +269,7 @@ func TestEmitHCL_FargateMulti(t *testing.T) {
 	}
 
 	outDir := t.TempDir()
-	written, err := EmitHCL(rp, outDir)
+	written, err := EmitHCL(rp, outDir, nil)
 	if err != nil {
 		t.Fatalf("EmitHCL: %v", err)
 	}
@@ -360,6 +360,140 @@ func TestEmitHCL_FargateMulti(t *testing.T) {
 	}
 }
 
+// TestEmitHCL_FargateWithCloudManagedResources covers the Fargate ×
+// cloud-managed-resource cross-product deferred from M4b to M9-cloud.
+// Synthesizes a plan with three resources (S3 bucket, RDS, SQS queue,
+// ElastiCache) on a Fargate target, then asserts the two M9-cloud bug
+// fixes:
+//
+//  1. The hybrid-dev laptop-IP SG (`caravan_dev`) must NOT appear; the
+//     new `caravan_resources` SG must reference the tasks SG via
+//     intra-VPC ingress on the engine ports (5432, 6379).
+//  2. Fargate task-def env entries for cloud-managed resources must be
+//     raw HCL refs (e.g. aws_sqs_queue.X.url, interpolated postgres URLs)
+//     instead of quoted `${VAR}` literals — a Fargate container has no
+//     shell to expand compose-style passthroughs.
+//
+// Also exercises the new aws_db_subnet_group / aws_elasticache_subnet_group
+// + publicly_accessible=false flip for VPC-anchored RDS/Cache.
+func TestEmitHCL_FargateWithCloudManagedResources(t *testing.T) {
+	plan := &compiler.Plan{
+		Name: "invoice-parse",
+		Entries: map[string]*compiler.Entry{
+			"processing": {
+				Name: "processing",
+				Uses: []string{"invoice_queue", "invoice_db", "invoice_blobs", "session_cache"},
+			},
+		},
+		Resources: map[string]*compiler.Resource{
+			"invoice_blobs": {Name: "invoice_blobs", Type: compiler.ResourceBucket},
+			"invoice_db": {
+				Name: "invoice_db", Type: compiler.ResourceDBSQL,
+				User: "invoice", Password: "invoice", DBName: "invoice_parse",
+			},
+			"invoice_queue": {Name: "invoice_queue", Type: compiler.ResourceQueue},
+			"session_cache": {Name: "session_cache", Type: compiler.ResourceCache},
+		},
+		Targets: map[string]*compiler.Target{
+			"prod-mixed": {
+				Name:               "prod-mixed",
+				Runtime:            compiler.RuntimeFargate,
+				Region:             "ap-southeast-1",
+				AwsProfile:         "caravan-poc",
+				DefaultComposition: compiler.CompositionCloudManaged,
+				Backend: &compiler.BackendConfig{
+					Bucket:    "caravan-rpc-poc-state",
+					LockTable: "caravan-poc-state-lock",
+					Region:    "ap-southeast-1",
+					Key:       "invoice-parse/prod-mixed.tfstate",
+				},
+				Entries: map[string]compiler.EntryDispatchMode{
+					"processing": compiler.EntryContainer,
+				},
+				VPC:               &compiler.VPCConfig{CIDR: "10.0.0.0/16", NAT: "single"},
+				CloudMapNamespace: "invoice-parse.local",
+				ECSClusterName:    "invoice-parse-prod-mixed",
+			},
+		},
+	}
+	diag := &compiler.Diagnostics{}
+	rp := compiler.Resolve(plan, "prod-mixed", diag)
+	if rp == nil || diag.HasErrors() {
+		t.Fatalf("Resolve failed: %v", diag)
+	}
+
+	outDir := t.TempDir()
+	if _, err := EmitHCL(rp, outDir, nil); err != nil {
+		t.Fatalf("EmitHCL: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(outDir, "main.tf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := string(body)
+
+	// Bug-fix #1: the new Fargate-resources SG must appear and reference
+	// the tasks SG on the engine ports. hclwrite aligns `=` per block,
+	// so substring assertions skip the spacing and pin the load-bearing
+	// tokens only.
+	for _, want := range []string{
+		`"aws_security_group" "caravan_resources"`,
+		// Ingress block references the tasks SG.
+		`security_groups = [aws_security_group.caravan_tasks.id]`,
+		// Engine-port numbers — 5432 (RDS) + 6379 (Cache).
+		`5432`,
+		`6379`,
+		// Subnet group resources.
+		`"aws_db_subnet_group" "caravan_resources"`,
+		`"aws_elasticache_subnet_group" "caravan_resources"`,
+		// RDS and Cache use the new SG + subnet groups; RDS is private.
+		`vpc_security_group_ids = [aws_security_group.caravan_resources.id]`,
+		`security_group_ids = [aws_security_group.caravan_resources.id]`,
+		`db_subnet_group_name`,
+		`aws_db_subnet_group.caravan_resources.name`,
+		`subnet_group_name`,
+		`aws_elasticache_subnet_group.caravan_resources.name`,
+		`publicly_accessible`,
+		`= false`,
+	} {
+		if !strings.Contains(main, want) {
+			t.Errorf("main.tf missing %q", want)
+		}
+	}
+
+	// Bug-fix #2: Fargate task-def env for cloud-managed resources must
+	// be raw HCL refs, never quoted compose-style `${VAR}` literals.
+	for _, want := range []string{
+		// QUEUE_URL + S3_BUCKET → bare HCL refs (no surrounding quotes).
+		`name = "QUEUE_URL", value = aws_sqs_queue.invoice_queue.url`,
+		`name = "S3_BUCKET", value = aws_s3_bucket.invoice_blobs.bucket`,
+		// DATABASE_URL → templated HCL string with the endpoint interpolation.
+		`name = "DATABASE_URL", value = "postgresql://invoice:invoice@${aws_db_instance.invoice_db.endpoint}/invoice_parse"`,
+		// REDIS_URL → templated HCL string with the cluster endpoint.
+		`name = "REDIS_URL", value = "redis://${aws_elasticache_cluster.session_cache.cache_nodes[0].address}:6379"`,
+	} {
+		if !strings.Contains(main, want) {
+			t.Errorf("task-def env missing %q", want)
+		}
+	}
+
+	// Negatives: the hybrid-dev SG/lookups must NOT appear on Fargate,
+	// and no quoted compose-passthrough should leak into the task def.
+	for _, unwanted := range []string{
+		`"aws_security_group" "caravan_dev"`,
+		`data "http" "myip"`,
+		`name = "DATABASE_URL", value = "${DATABASE_URL}"`,
+		`name = "QUEUE_URL", value = "${QUEUE_URL}"`,
+		`name = "S3_BUCKET", value = "${S3_BUCKET}"`,
+		`name = "REDIS_URL", value = "${REDIS_URL}"`,
+		`publicly_accessible = true`,
+	} {
+		if strings.Contains(main, unwanted) {
+			t.Errorf("main.tf should not contain %q", unwanted)
+		}
+	}
+}
+
 // TestEmitHCL_NoIAMFileWhenNoGrants confirms iam.tf is skipped when no
 // entry consumes a cloud-managed resource that grants IAM perms (i.e.
 // db.sql / cache only). Avoids an empty placeholder file.
@@ -384,7 +518,7 @@ func TestEmitHCL_NoIAMFileWhenNoGrants(t *testing.T) {
 	}
 	rp := compiler.Resolve(plan, "hybrid-dev", &compiler.Diagnostics{})
 	outDir := t.TempDir()
-	written, err := EmitHCL(rp, outDir)
+	written, err := EmitHCL(rp, outDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

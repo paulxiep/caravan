@@ -296,17 +296,35 @@ pub fn try_client<T: ?Sized + Send + Sync + 'static>() -> Option<Arc<T>> {
     // 1. If an HTTP factory exists for T (i.e., the trait was full-
     //    codegen-expanded by `#[wagon]`), consult the peer table.
     if let Some(factory) = lookup_http_factory::<T>() {
-        match peer_for(factory.interface_name) {
-            Some(entry @ PeerEntry::Http { .. }) | Some(entry @ PeerEntry::Lambda { .. }) => {
-                let boxed = (factory.construct)(entry);
-                return Some(
-                    *boxed
-                        .downcast::<Arc<T>>()
-                        .expect("caravan-rpc: HttpAdapterFactory.construct returned wrong type"),
-                );
+        // Self-call guard: when this process is itself running as the
+        // peer for `T` (CARAVAN_RPC_ROLE=peer-<factory.interface_name>),
+        // bypass the HTTP factory so the macro-emitted router's
+        // `try_client::<dyn T>()` returns the locally `provide()`-d impl
+        // instead of an HttpClient pointed back at us — that would loop.
+        // Crucially the consumer entry's binary AND the peer share the
+        // same CARAVAN_RPC_PEERS (peers reuse the entry's image); the
+        // role-env is the only distinguisher.
+        let serving_self = std::env::var("CARAVAN_RPC_ROLE")
+            .ok()
+            .and_then(|role| {
+                role.strip_prefix("peer-")
+                    .map(|iface| iface == factory.interface_name)
+            })
+            .unwrap_or(false);
+        if !serving_self {
+            match peer_for(factory.interface_name) {
+                Some(entry @ PeerEntry::Http { .. })
+                | Some(entry @ PeerEntry::Lambda { .. }) => {
+                    let boxed = (factory.construct)(entry);
+                    return Some(
+                        *boxed.downcast::<Arc<T>>().expect(
+                            "caravan-rpc: HttpAdapterFactory.construct returned wrong type",
+                        ),
+                    );
+                }
+                // Inproc or absent → fall through to local registry lookup.
+                _ => {}
             }
-            // Inproc or absent → fall through to local registry lookup.
-            _ => {}
         }
     }
 

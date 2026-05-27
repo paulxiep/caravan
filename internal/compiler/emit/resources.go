@@ -112,7 +112,7 @@ func buildMinIOService(_ *compiler.ResolvedResource) composeService {
 		},
 		Command:  []string{"server", "/data", "--console-address", ":9001"},
 		Ports:    []string{"9000:9000", "9001:9001"},
-		Profiles: []string{"app"},
+		Profiles: []string{AppProfile},
 	}
 }
 
@@ -133,7 +133,7 @@ func buildPostgresService(rr *compiler.ResolvedResource) composeService {
 			{Key: "POSTGRES_DB", Value: dbname},
 		},
 		Ports:    []string{"5432:5432"},
-		Profiles: []string{"app"},
+		Profiles: []string{AppProfile},
 	}
 }
 
@@ -155,7 +155,7 @@ func buildRedisService(_ *compiler.ResolvedResource) composeService {
 	return composeService{
 		Image:    "redis:7-alpine",
 		Ports:    []string{"6379:6379"},
-		Profiles: []string{"app"},
+		Profiles: []string{AppProfile},
 	}
 }
 
@@ -171,7 +171,7 @@ func buildRabbitMQService(_ *compiler.ResolvedResource) composeService {
 			{Key: "RABBITMQ_DEFAULT_PASS", Value: "guest"},
 		},
 		Ports:    []string{"5672:5672", "15672:15672"},
-		Profiles: []string{"app"},
+		Profiles: []string{AppProfile},
 	}
 }
 
@@ -187,7 +187,7 @@ func buildOpenSearchService(_ *compiler.ResolvedResource) composeService {
 			{Key: "OPENSEARCH_INITIAL_ADMIN_PASSWORD", Value: "Caravan!Dev1"},
 		},
 		Ports:    []string{"9200:9200"},
-		Profiles: []string{"app"},
+		Profiles: []string{AppProfile},
 	}
 }
 

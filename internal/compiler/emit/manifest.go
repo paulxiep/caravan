@@ -10,13 +10,13 @@ import (
 )
 
 // caravanRpcSpec is the version spec Caravan injects into user
-// manifests. Pinned at `>=0.1.0` now that the published wheel lives on
-// PyPI (M9 Phase 1 close, 2026-05-21). The earlier `>=0.1.0.dev0`
-// spec was a transition affordance for the vendored
-// `caravan_rpc-0.1.0.dev0-py3-none-any.whl` shipped via `--find-links`
-// before publish; PyPI-resolved installs no longer need the dev0
-// lower bound.
-const caravanRpcSpec = "caravan-rpc>=0.1.0"
+// manifests. Bumped to `>=0.1.1` for M9-cloud — the SDK gained a
+// peer-mode self-call guard (try_client / _ClientProxy bypass the HTTP
+// factory when CARAVAN_RPC_ROLE matches the served interface, so peer
+// containers reuse the local impl instead of looping back to themselves
+// over HTTP). The earlier 0.1.0 is unsuitable for any deploy that
+// dispatches a seam to its own image in peer mode.
+const caravanRpcSpec = "caravan-rpc>=0.1.1"
 
 // caravanRpcDistribution is the PEP-503 normalized distribution name
 // we recognize in user manifests (case-insensitive; `_` and `-` are
@@ -196,7 +196,7 @@ func findRequirementLine(lines []string, distribution string) (requirementState,
 		// caravanRpcSpec value (after the distribution name). The
 		// caller controls which spec it considers compatible.
 		switch strings.TrimSpace(spec) {
-		case "", ">=0.1.0", ">=0.1.0.dev0":
+		case "", ">=0.1.0", ">=0.1.0.dev0", ">=0.1.1":
 			return requirementCompatible, raw
 		default:
 			return requirementConflict, raw

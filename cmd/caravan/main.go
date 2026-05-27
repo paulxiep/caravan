@@ -251,7 +251,32 @@ func compileAndEmit(config, target string) (*compiler.ResolvedPlan, string, []st
 	// hybrid-dev, Fargate, Lambda, …). Pure docker-compose targets fall
 	// through with no HCL artifacts.
 	if tgt.EmitsHCL() {
-		hclPaths, err := hcl.EmitHCL(rp, outDir)
+		// Pre-compute env bindings (declared secrets + base compose
+		// env_file passthroughs + environment block passthroughs) per
+		// container-mode entry. The Fargate task-def emit and Lambda
+		// env emit both consume this map. Hybrid-dev targets get an
+		// empty map — `caravan up` for hybrid doesn't need a sidecar
+		// (the existing .env.hybrid flow handles its env wiring).
+		var perEntryBindings map[string][]hcl.EnvBinding
+		if tgt.Runtime == compiler.RuntimeFargate {
+			cwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return rp, outDir, wrote, 1
+			}
+			baseServiceEnvs, scanErr := emit.BaseComposeServiceEnvs(cwd)
+			if scanErr != nil {
+				fmt.Fprintf(os.Stderr, "caravan compile: warning: %v (continuing without base-compose env passthrough)\n", scanErr)
+			}
+			composeDir := emit.BaseComposeDir(cwd)
+			perEntryBindings, err = hcl.ComputeBindings(rp, tgt, baseServiceEnvs, composeDir)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return rp, outDir, wrote, 1
+			}
+		}
+
+		hclPaths, err := hcl.EmitHCL(rp, outDir, perEntryBindings)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return rp, outDir, wrote, 1
@@ -289,6 +314,50 @@ func compileAndEmit(config, target string) (*compiler.ResolvedPlan, string, []st
 			}
 			if readme != "" {
 				wrote = append(wrote, readme)
+			}
+
+			fargateCwd, getwdErr := os.Getwd()
+			if getwdErr != nil {
+				fmt.Fprintln(os.Stderr, getwdErr)
+				return rp, outDir, wrote, 1
+			}
+
+			// Manifest patches (per-entry build-context requirements.txt /
+			// Cargo.toml patches): same shape as compose targets. The
+			// user's Dockerfile reads `infra/${CARAVAN_TARGET}/generated/
+			// build-context/services/<entry>/requirements.txt`, so this
+			// file must exist for Fargate builds too.
+			manifestPaths, err := emit.EmitManifestPatches(rp, outDir, fargateCwd)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return rp, outDir, wrote, 1
+			}
+			wrote = append(wrote, manifestPaths...)
+			rp.Plan.PatchedManifests = manifestPaths
+
+			// Fargate Lambda build-override: emit a compose file with
+			// one build-only service per Lambda seam, inheriting the
+			// host entry's build context + additional_contexts from
+			// the user's base compose. `caravan up` invokes
+			// `docker compose -f <base> -f <this> build <seam>-lambda`
+			// per Lambda image. No-op when the target declares no
+			// Lambda seams.
+			baseBuilds, baseBuildsErr := emit.BaseComposeBuilds(fargateCwd)
+			if baseBuildsErr != nil {
+				fmt.Fprintln(os.Stderr, "caravan compile: warning:", baseBuildsErr)
+			}
+			fargateBuild, err := emit.EmitFargateBuildOverride(rp, baseBuilds)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return rp, outDir, wrote, 1
+			}
+			if len(fargateBuild) > 0 {
+				path := filepath.Join(outDir, "docker-compose.fargate-build.generated.yaml")
+				if err := os.WriteFile(path, fargateBuild, 0o644); err != nil {
+					fmt.Fprintln(os.Stderr, "caravan compile: write fargate build override:", err)
+					return rp, outDir, wrote, 1
+				}
+				wrote = append(wrote, path)
 			}
 		}
 	}

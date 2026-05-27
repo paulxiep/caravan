@@ -21,6 +21,14 @@ const seamServerPort = 8080
 // M7 replaces this with a compiler-derived secret (D7 in the dev plan).
 const sharedSecretPlaceholder = "dev-secret-placeholder"
 
+// AppProfile is the docker-compose `profiles:` value caravan emit attaches
+// to every entry, peer-service, and resource container (compose.go,
+// resources.go). `caravan up` / `caravan down` activates it with
+// `--profile <AppProfile>` (cmd/caravan/up.go's buildComposeArgs).
+// Exported so producer (emit) and consumer (cmd) reference a single
+// source of truth — flipping this constant moves both sides in lockstep.
+const AppProfile = "app"
+
 // EmitComposeOverride builds the docker-compose override yaml for one
 // resolved target. It's layered on top of the user's hand-authored
 // docker-compose.yaml — adds CARAVAN_RPC_PEERS to consumer entries and
@@ -185,6 +193,16 @@ type composeBuild struct {
 	Context    string
 	Dockerfile string
 	Target     string // optional; selects a stage in a multi-stage Dockerfile
+	// Args are docker build-args passed to BuildKit. Used to inject
+	// CARAVAN_TARGET so multi-stage Dockerfiles whose stages reference
+	// `infra/${CARAVAN_TARGET}/...` resolve cleanly — buildkit walks
+	// every stage's COPY paths when computing cache keys, even stages
+	// not selected by `target:`, so the path must exist regardless.
+	Args []composeBuildArg
+}
+
+type composeBuildArg struct {
+	Key, Value string
 }
 
 type composeEnvKV struct {
@@ -251,6 +269,14 @@ func buildSeamPeerService(seam *compiler.Seam, rp *compiler.ResolvedPlan, userRe
 
 // buildPythonPeerService keeps the existing M1 shape: reuse user's
 // image + command override invoking `python -m caravan_rpc.serve`.
+//
+// Build stage selection: when the host entry declares `runtime_target:`
+// (e.g. invoice-parse's processing stage), the peer's compose `build.target`
+// is set to that stage. Required when the user's Dockerfile is multi-stage
+// (M7 added a `lambda-slim` stage to invoice-parse's processing Dockerfile);
+// without an explicit target docker defaults to the LAST stage, which for
+// lambda-slim attempts `COPY infra/prod-mixed/...` and fails on compose
+// targets. Mirrors buildRustPeerService's hostEntry.RuntimeTarget usage.
 func buildPythonPeerService(seam *compiler.Seam, rp *compiler.ResolvedPlan) (composeService, error) {
 	emitter, ok := SeamServerCommands[compiler.LanguagePython]
 	if !ok {
@@ -260,21 +286,44 @@ func buildPythonPeerService(seam *compiler.Seam, rp *compiler.ResolvedPlan) (com
 	if err != nil {
 		return composeService{}, fmt.Errorf("seam %q: %w", seam.Name, err)
 	}
+	build := &composeBuild{
+		Context:    "..",
+		Dockerfile: seam.Dockerfile,
+		// CARAVAN_TARGET is read by every multi-stage Dockerfile-author
+		// who templates `infra/${CARAVAN_TARGET}/...` COPY paths. Inject
+		// the current target name so all stages resolve their context
+		// paths against the right per-target generated/ tree — buildkit
+		// rejects cache-key computation when ANY stage references a
+		// nonexistent path, even stages not selected by `target:`.
+		Args: []composeBuildArg{{Key: "CARAVAN_TARGET", Value: rp.TargetName}},
+	}
+	// Multi-stage Dockerfile target selection: prefer the entry whose
+	// `path:` matches the seam's `path:` (the entry that hosts this
+	// seam's code), and use its `runtime_target:`. Falls back to
+	// pickHostEntry's alphabetically-first container entry when no
+	// path-match exists (single-entry repos via defaultSeamPaths).
+	if hostEntry := pickSeamHostEntry(rp, seam); hostEntry != nil && hostEntry.RuntimeTarget != "" {
+		build.Target = hostEntry.RuntimeTarget
+	}
 	svc := composeService{
-		Name: seam.ServiceName,
-		Build: &composeBuild{
-			Context:    "..",
-			Dockerfile: seam.Dockerfile,
-		},
+		Name:  seam.ServiceName,
+		Build: build,
 		Environment: []composeEnvKV{
 			{Key: "CARAVAN_RPC_SHARED_SECRET", Value: sharedSecretPlaceholder},
 			{Key: "CARAVAN_RPC_PEERS", Value: rp.PeersJSON},
 		},
 		Command:  cmd,
-		Profiles: []string{"app"},
+		Profiles: []string{AppProfile},
 	}
+	// env_file resolution: per-seam override wins; otherwise inherit the
+	// host entry's env_file. The peer reuses the host entry's image so it
+	// has the same env-var shape at startup (model selection, API keys,
+	// etc.) — without inheriting, peers crash on missing user-config env
+	// vars that the entry takes for granted.
 	if seam.EnvFile != "" {
 		svc.EnvFile = []string{seam.EnvFile}
+	} else if hostEntry := pickSeamHostEntry(rp, seam); hostEntry != nil && hostEntry.EnvFile != "" {
+		svc.EnvFile = []string{hostEntry.EnvFile}
 	}
 	return svc, nil
 }
@@ -325,7 +374,7 @@ func buildRustPeerService(seam *compiler.Seam, rp *compiler.ResolvedPlan, userRe
 		Environment: envs,
 		// No `command:` — the chat binary's default CMD handles the
 		// role switch via `run_or_serve`.
-		Profiles: []string{"app"},
+		Profiles: []string{AppProfile},
 	}
 	// env_file resolution: per-seam override wins; otherwise inherit
 	// from the host entry. The peer runs the SAME binary as the
@@ -340,6 +389,42 @@ func buildRustPeerService(seam *compiler.Seam, rp *compiler.ResolvedPlan, userRe
 		svc.EnvFile = []string{hostEntry.EnvFile}
 	}
 	return svc
+}
+
+// pickSeamHostEntry returns the entry that hosts the seam's code in this
+// target. Resolution order:
+//
+//  1. Path-match: the alphabetically-first container-mode entry whose
+//     `path:` equals the seam's `path:`. This is the right choice for
+//     multi-entry repos where each entry has its own runtime_target
+//     (invoice-parse: seams.X.path = services/processing → entries.processing).
+//  2. Fallback: pickHostEntry's first-container-entry heuristic. Sufficient
+//     for single-entry repos where seam.Path was defaulted to the entry's
+//     path by defaultSeamPaths (code-rag).
+//
+// Returns nil only when neither resolution succeeds — callers treat that
+// as "no runtime_target available" and use the Dockerfile's default
+// (last) stage.
+func pickSeamHostEntry(rp *compiler.ResolvedPlan, seam *compiler.Seam) *compiler.Entry {
+	if rp == nil || rp.Plan == nil || seam == nil {
+		return nil
+	}
+	target := rp.Plan.Targets[rp.TargetName]
+	if target == nil {
+		return nil
+	}
+	if seam.Path != "" {
+		for _, entryName := range sortedKeys(target.Entries) {
+			if target.Entries[entryName] != compiler.EntryContainer {
+				continue
+			}
+			entry := rp.Plan.Entries[entryName]
+			if entry != nil && entry.Path == seam.Path {
+				return entry
+			}
+		}
+	}
+	return pickHostEntry(rp)
 }
 
 // pickHostEntry returns the entry whose image the Rust peers reuse.
@@ -495,6 +580,13 @@ func buildNode(b *composeBuild) *yaml.Node {
 	}
 	if b.Target != "" {
 		out.Content = append(out.Content, scalarNode("target"), scalarNode(b.Target))
+	}
+	if len(b.Args) > 0 {
+		argsNode := &yaml.Node{Kind: yaml.MappingNode}
+		for _, a := range b.Args {
+			argsNode.Content = append(argsNode.Content, scalarNode(a.Key), scalarNode(a.Value))
+		}
+		out.Content = append(out.Content, scalarNode("args"), argsNode)
 	}
 	return out
 }

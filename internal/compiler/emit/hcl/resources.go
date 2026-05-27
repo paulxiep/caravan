@@ -22,6 +22,28 @@ import (
 // default storage class). No retention, no versioning, no encryption-
 // at-rest tuning beyond AWS defaults. Tighten in v1.
 
+// resourceEmitOpts carries the per-target context that influences how a
+// VPC-anchored resource (RDS, ElastiCache) is wired into the emitted HCL.
+// Set by renderMain based on target.Runtime + which resources the target
+// actually declares. Resources without VPC concerns (S3, SQS, OpenSearch)
+// ignore this struct.
+type resourceEmitOpts struct {
+	// SGName is the local-name suffix of the aws_security_group block the
+	// per-resource emitter should reference. "caravan_dev" for hybrid-dev
+	// (laptop-IP ingress); "caravan_resources" for Fargate (intra-VPC).
+	SGName string
+	// IsFargate flips publicly_accessible to false and enables
+	// db_subnet_group_name / subnet_group_name. When false, the existing
+	// hybrid-dev shape is preserved byte-for-byte.
+	IsFargate bool
+	// DBSubnetGroup is the local-name of the aws_db_subnet_group block
+	// (only consulted when IsFargate). Empty when no db.sql declared.
+	DBSubnetGroup string
+	// CacheSubnetGroup is the local-name of the aws_elasticache_subnet_group
+	// block (only consulted when IsFargate). Empty when no cache declared.
+	CacheSubnetGroup string
+}
+
 // emitBucket writes an `aws_s3_bucket` and exports `S3_BUCKET` to
 // outputs. Bucket name uses the AWS pattern (lowercase, dashed).
 //
@@ -40,12 +62,14 @@ func emitBucket(body *hclwrite.Body, app, target, resName string, _ *compiler.Re
 	outputs["S3_BUCKET"] = fmt.Sprintf("aws_s3_bucket.%s.bucket", hcLocal)
 }
 
-// emitDBSQL writes an `aws_db_instance` (single-AZ, publicly_accessible
-// for laptop reachability) and exports DATABASE_URL.
+// emitDBSQL writes an `aws_db_instance` and exports DATABASE_URL. SG +
+// subnet group + public-access flags vary per target runtime (carried in
+// opts). hybrid-dev: laptop-IP SG, publicly_accessible=true. Fargate:
+// intra-VPC SG, private subnets, publicly_accessible=false.
 //
 // PoC choice: db.t3.micro, 20GB gp2, no multi-AZ, no backups, password
 // from yaml. Production grade resides at v1.
-func emitDBSQL(body *hclwrite.Body, app, target, resName string, rr *compiler.ResolvedResource, outputs map[string]string) {
+func emitDBSQL(body *hclwrite.Body, app, target, resName string, rr *compiler.ResolvedResource, opts resourceEmitOpts, outputs map[string]string) {
 	hcLocal := terraformLocalName(resName)
 	awsName := awsResourceName(app, resName, target)
 
@@ -64,24 +88,20 @@ func emitDBSQL(body *hclwrite.Body, app, target, resName string, rr *compiler.Re
 	bb.SetAttributeValue("db_name", cty.StringVal(dbname))
 	bb.SetAttributeValue("username", cty.StringVal(user))
 	bb.SetAttributeValue("password", cty.StringVal(password))
-	bb.SetAttributeValue("publicly_accessible", cty.BoolVal(true))
+	bb.SetAttributeValue("publicly_accessible", cty.BoolVal(!opts.IsFargate))
 	bb.SetAttributeValue("skip_final_snapshot", cty.BoolVal(true))
 	bb.SetAttributeValue("apply_immediately", cty.BoolVal(true))
-	// Security group reference — both `aws_db_instance` and the SG
-	// emit pre-create their own; the SG locks down to the laptop's IP
-	// via data "http" "myip".
-	//
-	// TODO(M9-cloud): on Fargate targets, `aws_security_group.caravan_dev`
-	// is not emitted (gated to hybrid-dev only by renderMain). M9-cloud
-	// must emit a Fargate-resources SG (ingress from tasks SG on 5432)
-	// and parameterize this attribute on target.Runtime. Today
-	// Fargate + RDS produces an undeclared-reference error at tofu plan.
-	// See development_plan.md M9-cloud "Fargate × cloud-managed-resource
-	// cross-product" work item.
-	bb.SetAttributeRaw("vpc_security_group_ids", rawHCL("[aws_security_group.caravan_dev.id]"))
+	sgName := opts.SGName
+	if sgName == "" {
+		sgName = "caravan_dev"
+	}
+	bb.SetAttributeRaw("vpc_security_group_ids", rawHCL("[aws_security_group."+sgName+".id]"))
+	if opts.IsFargate && opts.DBSubnetGroup != "" {
+		bb.SetAttributeRaw("db_subnet_group_name", rawHCL("aws_db_subnet_group."+opts.DBSubnetGroup+".name"))
+	}
 
-	// DATABASE_URL embeds the AWS-resolved endpoint; the `tofu output
-	// -json` flow substitutes the actual host:port at runtime.
+	// DATABASE_URL embeds the AWS-resolved endpoint; tofu interpolates
+	// the `${aws_db_instance.X.endpoint}` reference at apply time.
 	outputs["DATABASE_URL"] = fmt.Sprintf(`"postgresql://%s:%s@${aws_db_instance.%s.endpoint}/%s"`, user, password, hcLocal, dbname)
 }
 
@@ -101,8 +121,9 @@ func emitQueue(body *hclwrite.Body, app, target, resName string, _ *compiler.Res
 }
 
 // emitCache writes an `aws_elasticache_cluster` (single-node Redis 7)
-// and exports REDIS_URL.
-func emitCache(body *hclwrite.Body, app, target, resName string, _ *compiler.ResolvedResource, outputs map[string]string) {
+// and exports REDIS_URL. SG + subnet group vary per target runtime
+// (carried in opts).
+func emitCache(body *hclwrite.Body, app, target, resName string, _ *compiler.ResolvedResource, opts resourceEmitOpts, outputs map[string]string) {
 	hcLocal := terraformLocalName(resName)
 	awsName := awsResourceName(app, resName, target)
 
@@ -114,10 +135,14 @@ func emitCache(body *hclwrite.Body, app, target, resName string, _ *compiler.Res
 	bb.SetAttributeValue("node_type", cty.StringVal("cache.t3.micro"))
 	bb.SetAttributeValue("num_cache_nodes", cty.NumberIntVal(1))
 	bb.SetAttributeValue("port", cty.NumberIntVal(6379))
-	// TODO(M9-cloud): same Fargate-target SG hole as emitDBSQL above.
-	// `caravan_dev` SG is hybrid-dev-only; Fargate + ElastiCache currently
-	// produces an undeclared-reference error. Fix alongside the RDS case.
-	bb.SetAttributeRaw("security_group_ids", rawHCL("[aws_security_group.caravan_dev.id]"))
+	sgName := opts.SGName
+	if sgName == "" {
+		sgName = "caravan_dev"
+	}
+	bb.SetAttributeRaw("security_group_ids", rawHCL("[aws_security_group."+sgName+".id]"))
+	if opts.IsFargate && opts.CacheSubnetGroup != "" {
+		bb.SetAttributeRaw("subnet_group_name", rawHCL("aws_elasticache_subnet_group."+opts.CacheSubnetGroup+".name"))
+	}
 
 	outputs["REDIS_URL"] = fmt.Sprintf(`"redis://${aws_elasticache_cluster.%s.cache_nodes[0].address}:6379"`, hcLocal)
 }

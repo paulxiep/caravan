@@ -113,17 +113,22 @@ def test_auto_register_yaml_fallback_local_fs():
 
 
 def test_auto_register_env_overrides_yaml():
-    """If both env (S3_BUCKET) and yaml fallback are present, env wins.
+    """When CARAVAN_BLOB_BACKEND=s3 marker + S3_BUCKET are present, the
+    explicit-marker path wins over the yaml fallback's local_fs.
     Skipped if boto3 isn't installed because S3BlobStore.from_env() builds
     a real boto3 client at construction time."""
     boto3 = pytest.importorskip("boto3")
     del boto3  # only needed to gate the test
     with mock.patch.dict(
         os.environ,
-        {"S3_BUCKET": "test-bucket-name", "AWS_REGION": "us-east-1"},
+        {
+            "CARAVAN_BLOB_BACKEND": "s3",
+            "S3_BUCKET": "test-bucket-name",
+            "AWS_REGION": "us-east-1",
+        },
         clear=True,
     ):
-        # Should pick the env path (S3BlobStore), not the yaml local_fs.
+        # Should pick the marker path (S3BlobStore), not the yaml local_fs.
         auto_register_resources(
             yaml_fallback={"blob_storage": {"type": "local_fs", "base_path": "/tmp"}}
         )
@@ -132,6 +137,41 @@ def test_auto_register_env_overrides_yaml():
     from caravan_rpc.resources.blob_store import S3BlobStore
 
     assert isinstance(_registry.lookup(BlobStore), S3BlobStore)
+
+
+def test_auto_register_blob_backend_s3_missing_bucket_loud_fails():
+    """CARAVAN_BLOB_BACKEND=s3 with no S3_BUCKET must raise rather than
+    silently fall through to LocalFs. Catches the "user forgot
+    .env.hybrid" cloud footgun at startup."""
+    with mock.patch.dict(
+        os.environ,
+        {"CARAVAN_BLOB_BACKEND": "s3"},
+        clear=True,
+    ):
+        with pytest.raises(ValueError, match=r"CARAVAN_BLOB_BACKEND=s3 but S3_BUCKET"):
+            auto_register_resources(yaml_fallback=None)
+
+
+def test_auto_register_blob_backend_local_fs_skips_minio():
+    """CARAVAN_BLOB_BACKEND=local-fs selects LocalFs even when MinIO
+    env vars (S3_ENDPOINT_URL + AWS_*) are also set. Mirrors caravan's
+    oss-local emit pattern: MinIO container present but unused."""
+    with mock.patch.dict(
+        os.environ,
+        {
+            "CARAVAN_BLOB_BACKEND": "local-fs",
+            "S3_ENDPOINT_URL": "http://minio:9000",
+            "AWS_ACCESS_KEY_ID": "minioadmin",
+            "AWS_SECRET_ACCESS_KEY": "minioadmin",
+        },
+        clear=True,
+    ):
+        auto_register_resources(
+            yaml_fallback={"blob_storage": {"type": "local_fs", "base_path": "/data/blobs"}}
+        )
+    from caravan_rpc.resources.blob_store import LocalFsBlobStore
+
+    assert isinstance(_registry.lookup(BlobStore), LocalFsBlobStore)
 
 
 def test_auto_register_queue_yaml_redis_stream():

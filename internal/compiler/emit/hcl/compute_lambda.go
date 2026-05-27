@@ -2,6 +2,7 @@ package hcl
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
@@ -23,7 +24,7 @@ import (
 //
 // IAM caller grants (lambda:InvokeFunctionUrl on the entry's task role)
 // are emitted from iam.go alongside the entry's resource grants.
-func emitLambdaSeams(body *hclwrite.Body, rp *compiler.ResolvedPlan, target *compiler.Target, outputs map[string]string) {
+func emitLambdaSeams(body *hclwrite.Body, rp *compiler.ResolvedPlan, target *compiler.Target, perEntryBindings map[string][]EnvBinding, outputs map[string]string) {
 	seams := lambdaConsumers(rp, target)
 	if len(seams) == 0 {
 		return
@@ -32,7 +33,7 @@ func emitLambdaSeams(body *hclwrite.Body, rp *compiler.ResolvedPlan, target *com
 	emitLambdaExecutionRole(body)
 
 	for _, c := range seams {
-		emitLambdaFunction(body, target, c)
+		emitLambdaFunction(body, target, c, perEntryBindings)
 		emitLambdaFunctionURL(body, c, outputs)
 	}
 }
@@ -151,7 +152,7 @@ func lambdaAssumeRolePolicy() string {
 // and CARAVAN_RPC_LAMBDA_INTERFACE_MODULE drive caravan_rpc.lambda_handler
 // at cold start. CARAVAN_RPC_PEERS isn't injected — a Lambda peer never
 // dispatches outward through the SDK in M7's seam carving.
-func emitLambdaFunction(body *hclwrite.Body, target *compiler.Target, c lambdaConsumer) {
+func emitLambdaFunction(body *hclwrite.Body, target *compiler.Target, c lambdaConsumer, perEntryBindings map[string][]EnvBinding) {
 	local := terraformLocalName(c.Name)
 	funcName := fmt.Sprintf("caravan-%s-%s", toDashed(target.Name), toDashed(c.Name))
 
@@ -173,41 +174,73 @@ func emitLambdaFunction(body *hclwrite.Body, target *compiler.Target, c lambdaCo
 	bb.SetAttributeValue("memory_size", cty.NumberIntVal(512))
 	bb.SetAttributeValue("timeout", cty.NumberIntVal(30))
 
+	// Lambda env: caravan-internal vars (CARAVAN_RPC_*) inlined as cty
+	// literals; user-app bindings (declared secrets + env_file +
+	// environment block passthroughs) mixed in as either literals or
+	// `var.X` refs. Because cty.ObjectVal needs typed values and we
+	// need HCL var refs side-by-side, the variables map is emitted as
+	// a raw HCL expression rather than a cty object.
 	envBlock := bb.AppendNewBlock("environment", nil)
 	eb := envBlock.Body()
-	envVars := lambdaEnvVars(c)
-	eb.SetAttributeValue("variables", cty.ObjectVal(envVars))
+	envExpr := lambdaEnvExpr(c, perEntryBindings)
+	eb.SetAttributeRaw("variables", rawHCL(envExpr))
 
 	body.AppendNewline()
 }
 
-// lambdaEnvVars returns the per-seam Lambda env var map. The Python
-// caravan_rpc.lambda_handler reads these at cold start to bind the
-// interface + impl class. For Rust, run_or_serve auto-detects the
-// AWS_LAMBDA_RUNTIME_API env var (set by AWS) and uses CARAVAN_RPC_ROLE
-// + the inventory factory for dispatch — Rust seams don't need these
-// env vars but emitting them is harmless and keeps the surface
-// consistent across languages.
-func lambdaEnvVars(c lambdaConsumer) map[string]cty.Value {
-	out := map[string]cty.Value{
-		"CARAVAN_RPC_ROLE":             cty.StringVal("peer-" + c.Name),
-		"CARAVAN_RPC_LAMBDA_INTERFACE": cty.StringVal(c.Name),
-		"CARAVAN_RPC_LAMBDA_IMPL":      cty.StringVal(c.Seam.Impl),
+// lambdaEnvExpr returns the HCL expression for the Lambda's
+// `environment { variables = ... }` map. Emitted as a raw `{ K = V, ... }`
+// HCL object so caravan-internal literal values, user-app literal
+// bindings, and tofu `var.X` references can all coexist (cty.ObjectVal
+// only accepts already-typed values, which doesn't compose with HCL
+// refs).
+//
+// Bindings are sourced from perEntryBindings[c.HostEntry.Name]: declared
+// secrets + env_file + base compose `environment:` block, computed by
+// ComputeBindings. The Lambda image is built from the host entry's
+// Dockerfile (lambda-slim stage), so the runtime expects the same
+// user-app env shape as the host's Fargate task.
+func lambdaEnvExpr(c lambdaConsumer, perEntryBindings map[string][]EnvBinding) string {
+	type kv struct {
+		Key  string
+		Expr string // already an HCL expression (quoted literal or var.X)
 	}
-	// For Python seams, the interface class often lives in a different
-	// module from the impl (the @wagon class can be co-located with the
-	// pure function it wraps). The handler reads INTERFACE_MODULE if set;
-	// falls back to the impl's module otherwise. We populate it
-	// unconditionally for now; future iterations can detect language
-	// + only emit when relevant.
+	entries := []kv{
+		{Key: "CARAVAN_RPC_ROLE", Expr: fmt.Sprintf("%q", "peer-"+c.Name)},
+		{Key: "CARAVAN_RPC_LAMBDA_INTERFACE", Expr: fmt.Sprintf("%q", c.Name)},
+		{Key: "CARAVAN_RPC_LAMBDA_IMPL", Expr: fmt.Sprintf("%q", c.Seam.Impl)},
+	}
 	if c.Seam.Impl != "" {
-		// Heuristic: same module as Impl unless the seam explicitly
-		// declares otherwise. M7 wraps both seams (ValidateExtraction +
-		// IntentClassifier) in the same module as the underlying logic,
-		// so the impl module path covers it.
-		out["CARAVAN_RPC_LAMBDA_INTERFACE_MODULE"] = cty.StringVal("")
+		// CARAVAN_RPC_LAMBDA_INTERFACE_MODULE: same module as Impl unless
+		// the seam explicitly declares otherwise. For Python seams,
+		// caravan_rpc.lambda_handler reads this at cold start; Rust runs
+		// dispatch by CARAVAN_RPC_ROLE + inventory factory and ignores it.
+		entries = append(entries, kv{Key: "CARAVAN_RPC_LAMBDA_INTERFACE_MODULE", Expr: `""`})
 	}
-	return out
+	if c.HostEntry != nil {
+		for _, b := range perEntryBindings[c.HostEntry.Name] {
+			if b.Literal != "" {
+				entries = append(entries, kv{Key: b.Key, Expr: fmt.Sprintf("%q", b.Literal)})
+				continue
+			}
+			if b.VarName != "" {
+				entries = append(entries, kv{Key: b.Key, Expr: "var." + b.VarName})
+			}
+		}
+	}
+	// Stable order (alphabetical) for deterministic diffs.
+	for i := 1; i < len(entries); i++ {
+		for j := i; j > 0 && entries[j-1].Key > entries[j].Key; j-- {
+			entries[j-1], entries[j] = entries[j], entries[j-1]
+		}
+	}
+	var b strings.Builder
+	b.WriteString("{\n")
+	for _, e := range entries {
+		b.WriteString(fmt.Sprintf("      %s = %s\n", e.Key, e.Expr))
+	}
+	b.WriteString("    }")
+	return b.String()
 }
 
 // emitLambdaFunctionURL writes the Function URL + caches its function_url

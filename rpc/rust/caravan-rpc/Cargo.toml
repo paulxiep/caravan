@@ -1,6 +1,6 @@
 [package]
 name = "caravan-rpc"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Rachapong Chirarattananon"]
@@ -44,7 +44,7 @@ resources-rabbit = ["dep:lapin", "dep:tokio", "dep:uuid", "dep:url"]
 resources-all = ["resources-aws", "resources-redis", "resources-rabbit"]
 
 [dependencies]
-caravan-rpc-macros = { version = "=0.1.0", path = "../caravan-rpc-macros" }
+caravan-rpc-macros = { version = "=0.1.1", path = "../caravan-rpc-macros" }
 
 # Codec + peer-table parsing — always on (no HTTP cost, used by inproc paths
 # for diagnostics and forward-compat peer-table inspection).

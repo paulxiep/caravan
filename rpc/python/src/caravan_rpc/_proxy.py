@@ -79,7 +79,17 @@ class _ClientProxy:
             )
         self._interface = interface_cls
         peers = _load_peers()
-        self._peer = peers.get(interface_cls.__name__)
+        peer = peers.get(interface_cls.__name__)
+        # Self-call guard: when this process is itself serving as the peer
+        # for this interface, the HTTP entry in the peer table would point
+        # back at us (peer containers reuse the consumer entry's image and
+        # share its CARAVAN_RPC_PEERS env var; CARAVAN_RPC_ROLE is the
+        # only distinguisher). Falling through to the local registry uses
+        # the `provide()`-d impl that the same process already registered.
+        role = os.environ.get("CARAVAN_RPC_ROLE", "")
+        if peer is not None and role == f"peer-{interface_cls.__name__}":
+            peer = None
+        self._peer = peer
 
     def __repr__(self) -> str:
         mode = self._peer.get("mode") if self._peer else "inproc(no-env)"

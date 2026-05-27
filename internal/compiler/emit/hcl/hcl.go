@@ -18,10 +18,16 @@ import (
 // target into outDir. Returns the list of written file paths in
 // deterministic order.
 //
-// Preconditions: target.CredsPassthrough is true and target.Backend is
-// populated (validateHybridTarget enforces this upstream). HCL emit
-// itself does not re-validate; callers must.
-func EmitHCL(rp *compiler.ResolvedPlan, outDir string) ([]string, error) {
+// `perEntryBindings` carries the env-binding lists pre-computed by
+// ComputeBindings (declared secrets + env_file passthroughs +
+// `environment:` block passthroughs per container-mode entry). Pass
+// nil/empty when the target has no Fargate or Lambda compute — the
+// binding-driven `variable {}` + sidecar-manifest emits are skipped.
+//
+// Preconditions: target.EmitsHCL() is true (validateHybridTarget /
+// validateFargateTarget enforce this upstream). HCL emit itself does
+// not re-validate; callers must.
+func EmitHCL(rp *compiler.ResolvedPlan, outDir string, perEntryBindings map[string][]EnvBinding) ([]string, error) {
 	if rp == nil || rp.Plan == nil {
 		return nil, fmt.Errorf("nil ResolvedPlan")
 	}
@@ -47,7 +53,7 @@ func EmitHCL(rp *compiler.ResolvedPlan, outDir string) ([]string, error) {
 	}{
 		{name: "versions.tf", body: renderVersions()},
 		{name: "backend.tf", body: renderBackend(target.Backend)},
-		{name: "main.tf", body: renderMain(rp, target)},
+		{name: "main.tf", body: renderMain(rp, target, perEntryBindings)},
 	}
 	if len(rp.IAMGrants) > 0 {
 		// renderIAM may return nil when the target's principal kind is
@@ -70,7 +76,34 @@ func EmitHCL(rp *compiler.ResolvedPlan, outDir string) ([]string, error) {
 		}
 		written = append(written, path)
 	}
+
+	// Sidecar manifest: only emit when bindings exist (Fargate / Lambda
+	// targets). Hybrid-dev compose targets and binding-less Fargate
+	// targets get no sidecar — `caravan up` falls back to a no-vars
+	// apply.
+	if hasAnyVarBinding(perEntryBindings) {
+		path, err := WriteWiringManifest(outDir, perEntryBindings)
+		if err != nil {
+			return nil, fmt.Errorf("EmitHCL write wiring manifest: %w", err)
+		}
+		written = append(written, path)
+	}
 	return written, nil
+}
+
+// hasAnyVarBinding reports whether at least one binding across all
+// entries needs a TF variable (i.e. has a non-empty VarName). Literal-
+// only bindings don't trigger sidecar emit since `caravan up` doesn't
+// need to resolve anything from the host env for them.
+func hasAnyVarBinding(perEntryBindings map[string][]EnvBinding) bool {
+	for _, bindings := range perEntryBindings {
+		for _, b := range bindings {
+			if b.VarName != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // renderVersions emits versions.tf — the OpenTofu version floor and
@@ -130,7 +163,7 @@ func renderBackend(b *compiler.BackendConfig) []byte {
 // to VPC-only resources (RDS, ElastiCache) from the developer's laptop.
 // Fargate targets use the tasks SG (emitted via emitVPC) instead — tasks
 // reach resources from inside the VPC, no laptop ingress needed.
-func renderMain(rp *compiler.ResolvedPlan, target *compiler.Target) []byte {
+func renderMain(rp *compiler.ResolvedPlan, target *compiler.Target, perEntryBindings map[string][]EnvBinding) []byte {
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
 	body.AppendUnstructuredTokens(headerTokens("main.tf", target.Name))
@@ -145,21 +178,27 @@ func renderMain(rp *compiler.ResolvedPlan, target *compiler.Target) []byte {
 	// Walk cloud-managed resources in sorted order. Resource-kind
 	// dispatch picks the right emitter from the catalog.
 	resources := cloudManagedResources(rp)
-	needsLaptopSG := false
-	if target.Runtime != compiler.RuntimeFargate {
-		// Only hybrid-dev (compose + cloud-managed resources) needs the
-		// laptop-IP SG. Fargate targets put RDS/ElastiCache (when present)
-		// inside the VPC alongside the tasks; access flows over the tasks
-		// SG, not from the laptop. Cross-product "Fargate + RDS + SG" is
-		// a future cleanup.
-		for _, name := range resources {
-			rr := rp.ResolvedResources[name]
-			if rr.Type == compiler.ResourceDBSQL || rr.Type == compiler.ResourceCache {
-				needsLaptopSG = true
-				break
-			}
+	hasDB := false
+	hasCache := false
+	for _, name := range resources {
+		rr := rp.ResolvedResources[name]
+		if rr == nil {
+			continue
+		}
+		switch rr.Type {
+		case compiler.ResourceDBSQL:
+			hasDB = true
+		case compiler.ResourceCache:
+			hasCache = true
 		}
 	}
+	isFargate := target.Runtime == compiler.RuntimeFargate
+	// hybrid-dev (compose + cloud-managed VPC-anchored resources) needs
+	// the laptop-IP SG so the developer can reach RDS/ElastiCache from
+	// outside the VPC. Fargate uses an intra-VPC `caravan_resources` SG
+	// emitted by emitFargateResourcesSupport instead.
+	needsLaptopSG := !isFargate && (hasDB || hasCache)
+	needsFargateResources := isFargate && (hasDB || hasCache)
 
 	if needsLaptopSG {
 		emitMyIPLookup(body)
@@ -169,12 +208,30 @@ func renderMain(rp *compiler.ResolvedPlan, target *compiler.Target) []byte {
 	outputs := map[string]string{} // env-var name → HCL reference expression
 
 	// VPC + Fargate scaffolding before resources so resource blocks can
-	// reference VPC subnet/SG outputs later if a future iteration moves
-	// RDS/ElastiCache into the VPC. Today's resource emitters are
-	// VPC-unaware so order doesn't strictly matter, but this keeps the
-	// emitted HCL readable top-to-bottom.
-	if target.Runtime == compiler.RuntimeFargate {
+	// reference subnet groups + the caravan_resources SG.
+	if isFargate {
+		emitVarBindings(body, perEntryBindings)
 		emitVPC(body, rp.Plan.Name, target.Name, target.VPC, outputs)
+		if needsFargateResources {
+			emitFargateResourcesSupport(body, rp.Plan.Name, target.Name, hasDB, hasCache)
+		}
+	}
+
+	// Choose the SG + subnet group names per-runtime. Fargate uses the
+	// intra-VPC SG + private-subnet groups; hybrid-dev uses the laptop-IP
+	// SG + AWS-default subnet group (publicly_accessible=true).
+	opts := resourceEmitOpts{SGName: "caravan_dev"}
+	if isFargate {
+		opts = resourceEmitOpts{
+			SGName:    "caravan_resources",
+			IsFargate: true,
+		}
+		if hasDB {
+			opts.DBSubnetGroup = "caravan_resources"
+		}
+		if hasCache {
+			opts.CacheSubnetGroup = "caravan_resources"
+		}
 	}
 
 	for _, name := range resources {
@@ -189,11 +246,11 @@ func renderMain(rp *compiler.ResolvedPlan, target *compiler.Target) []byte {
 		case compiler.ResourceBucket:
 			emitBucket(body, rp.Plan.Name, target.Name, name, rr, outputs)
 		case compiler.ResourceDBSQL:
-			emitDBSQL(body, rp.Plan.Name, target.Name, name, rr, outputs)
+			emitDBSQL(body, rp.Plan.Name, target.Name, name, rr, opts, outputs)
 		case compiler.ResourceQueue:
 			emitQueue(body, rp.Plan.Name, target.Name, name, rr, outputs)
 		case compiler.ResourceCache:
-			emitCache(body, rp.Plan.Name, target.Name, name, rr, outputs)
+			emitCache(body, rp.Plan.Name, target.Name, name, rr, opts, outputs)
 		case compiler.ResourceSearch:
 			emitSearch(body, rp.Plan.Name, target.Name, name, rr, outputs)
 		}
@@ -202,13 +259,13 @@ func renderMain(rp *compiler.ResolvedPlan, target *compiler.Target) []byte {
 
 	// Compute emission: ECS task defs + services + Cloud Map for Fargate
 	// targets. No-op for hybrid-dev (compose handles compute there).
-	emitComputeForTarget(body, rp, target, outputs)
+	emitComputeForTarget(body, rp, target, perEntryBindings, outputs)
 
 	// Lambda seams (M7) — emitted independently of target.Runtime since
 	// Lambda is a per-seam dispatch mode, not a target runtime. Today's
 	// only host runtime that wires Lambda seams is Fargate (prod-mixed);
 	// future lambda-mixed compose targets will also call this.
-	emitLambdaSeams(body, rp, target, outputs)
+	emitLambdaSeams(body, rp, target, perEntryBindings, outputs)
 
 	// Output blocks — drive the `tofu output -json | jq -r` flow
 	// documented in the generated README. Sorted by env-var name.

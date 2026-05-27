@@ -1,0 +1,6 @@
+{
+  "containerOverrides": [{
+    "name": "processing",
+    "command": ["python", "-c", "import os, psycopg2; conn=psycopg2.connect(os.environ['DATABASE_URL']); c=conn.cursor(); c.execute(\"INSERT INTO jobs (id, tenant_id, status, source_channel, source_identifier, input_blob_path) VALUES ('984f5049-6ad5-4de1-9058-6d1424df4613', 'a0000000-0000-0000-0000-000000000001', 'queued', 'test', 'test-001', 'a0000000-0000-0000-0000-000000000001/984f5049-6ad5-4de1-9058-6d1424df4613/input.pdf') ON CONFLICT (id) DO NOTHING\"); conn.commit(); print('inserted')"]
+  }]
+}
