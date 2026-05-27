@@ -1,5 +1,7 @@
 # AWS Service Role Groups — Scale, Latency, Cost
 
+> ℹ️ **REFERENCE DATA — snapshot 2026-05-16.** Useful as input data for Phase 2 HCL emit decisions (resource-tier → service mapping). Pricing and limits drift; re-verify on the AWS Pricing Calculator before quoting in a current decision. Authoritative project docs are [`thesis.md`](thesis.md) and [`development_plan.md`](development_plan.md).
+
 > **Snapshot date: 2026-05-16. Prices in us-east-1 USD unless noted. Re-verify on the AWS Pricing Calculator before quoting in a decision doc.**
 >
 > **Sources**: numbers come from training data through Jan 2026 plus targeted web verification (2026-05-16) for the most volatile services: Bedrock per-token pricing (Claude Opus/Sonnet/Haiku verified against `aws.amazon.com/bedrock/pricing` and `platform.claude.com`), S3 Vectors (verified against the late-2025 GA blog post), Aurora Serverless v2 Standard vs I/O-Optimized ACU rates, OpenSearch Serverless OCU minimums, MSK Serverless components, Lambda x86 vs ARM duration pricing, DynamoDB on-demand post-Nov-2024 50% reduction. Older / stable services (EC2, S3, RDS, SQS) are not web-re-verified for this snapshot.

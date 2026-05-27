@@ -28,6 +28,14 @@ const (
 	ResourceStream ResourceKind = "stream"
 	ResourceSearch ResourceKind = "search"
 	ResourceLLM    ResourceKind = "llm"
+
+	// ResourceKindLambdaCall is an internal marker used on IAMStatement
+	// entries that represent a caller's permission to invoke a Lambda
+	// seam (M7). Not a user-declared resource type — explicitly excluded
+	// from allResourceKinds so `type: _lambda_call` in yaml fails
+	// IsValid(). HCL emit recognizes it to produce the correct ARN
+	// expression (aws_lambda_function.<seam>.arn).
+	ResourceKindLambdaCall ResourceKind = "_lambda_call"
 )
 
 // allResourceKinds is the canonical set used for validation. Update
@@ -76,12 +84,59 @@ type RuntimeKind string
 
 const (
 	RuntimeDockerCompose RuntimeKind = "docker-compose"
-	RuntimeAWS           RuntimeKind = "aws"
+	RuntimeFargate       RuntimeKind = "fargate"
+	// No RuntimeLambda: M7's Lambda demo treats Lambda as a *seam
+	// dispatch mode* (`seams.X: lambda`) inside Fargate or compose
+	// targets, not as a target runtime. A "pure Lambda entries" target
+	// would need RuntimeLambda; reserved for a future milestone.
 )
 
 // IsValid reports whether r names a known runtime.
 func (r RuntimeKind) IsValid() bool {
-	return r == RuntimeDockerCompose || r == RuntimeAWS
+	return r == RuntimeDockerCompose || r == RuntimeFargate
+}
+
+// PrincipalKind is the IAM principal that per-entry policies attach to.
+// Selected per target based on Runtime + composition:
+//
+//	hybrid-dev (compose + cloud-managed resources):   PrincipalIAMUser
+//	staging-fargate (Fargate compute):                PrincipalFargateTaskRole
+//	prod-mixed (Lambda dispatch, M7):                 PrincipalLambdaExecutionRole
+//
+// The HCL emit path branches on this to choose the policy attachment
+// resource type (`aws_iam_user_policy` vs `aws_iam_role_policy`) and
+// whether a role + assume-role policy needs to be emitted alongside.
+type PrincipalKind string
+
+const (
+	PrincipalIAMUser             PrincipalKind = "iam-user"
+	PrincipalFargateTaskRole     PrincipalKind = "fargate-task-role"
+	PrincipalLambdaExecutionRole PrincipalKind = "lambda-execution-role"
+)
+
+// IsValid reports whether p names a known principal kind.
+func (p PrincipalKind) IsValid() bool {
+	return p == PrincipalIAMUser || p == PrincipalFargateTaskRole || p == PrincipalLambdaExecutionRole
+}
+
+// PrincipalForTarget returns the IAM principal kind appropriate for the
+// target's runtime. Called by HCL emit to choose between user-policy
+// and role-policy attachment shapes.
+func PrincipalForTarget(t *Target) PrincipalKind {
+	if t == nil {
+		return PrincipalIAMUser
+	}
+	switch t.Runtime {
+	case RuntimeFargate:
+		return PrincipalFargateTaskRole
+	case RuntimeDockerCompose:
+		// hybrid-dev with creds_passthrough: long-lived access keys on
+		// the IAM user. Pure-local compose targets never reach the IAM
+		// emitter (no cloud-managed resources).
+		return PrincipalIAMUser
+	}
+	// Unknown runtime → safest default. Future placements add cases here.
+	return PrincipalIAMUser
 }
 
 // ResourceVariant names the concrete OSS-local container choice for a
@@ -169,7 +224,7 @@ type Language string
 const (
 	LanguagePython  Language = "python"
 	LanguageRust    Language = "rust"
-	LanguageTS      Language = "ts"      // post-PoC
-	LanguageGo      Language = "go"      // post-PoC
+	LanguageTS      Language = "ts" // post-PoC
+	LanguageGo      Language = "go" // post-PoC
 	LanguageUnknown Language = "unknown"
 )

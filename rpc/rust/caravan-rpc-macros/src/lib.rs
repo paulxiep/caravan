@@ -284,14 +284,23 @@ fn expand_trait(item: &ItemTrait, mode: TraitMode) -> syn::Result<TokenStream2> 
         // Original trait, emitted unchanged.
         #item
 
-        // HTTP-client adapter: dispatches each method call over the wire.
+        // Remote-client adapter: dispatches each method call over the wire.
+        // Holds a `PeerEntry` so per-call dispatch can branch between HTTP-
+        // bearer and Lambda-SigV4 paths at runtime (M7). The `new(url)`
+        // constructor is retained for back-compat tests / direct
+        // instantiation; it implicitly wraps the URL as an HTTP peer.
         #vis struct #client_struct {
-            base_url: ::std::string::String,
+            peer: ::caravan_rpc::PeerEntry,
         }
 
         impl #client_struct {
             #vis fn new(base_url: impl ::std::convert::Into<::std::string::String>) -> Self {
-                Self { base_url: base_url.into() }
+                Self {
+                    peer: ::caravan_rpc::PeerEntry::Http { url: base_url.into() },
+                }
+            }
+            #vis fn from_peer(peer: ::caravan_rpc::PeerEntry) -> Self {
+                Self { peer }
             }
         }
 
@@ -302,7 +311,9 @@ fn expand_trait(item: &ItemTrait, mode: TraitMode) -> syn::Result<TokenStream2> 
 
         // Builder: wraps a registered impl into an axum Router for the peer
         // service to serve. Reads CARAVAN_RPC_SHARED_SECRET at call time so
-        // the bearer-auth check matches what the client side sends.
+        // the bearer-auth check matches what the client side sends. The
+        // same router is also handed to lambda_http::run when the peer is
+        // a Lambda function (run_or_serve handles that branch).
         #vis fn #router_fn(
             impl_arc: ::std::sync::Arc<dyn #trait_ident>,
         ) -> ::caravan_rpc::__macro_support::axum::Router {
@@ -313,16 +324,16 @@ fn expand_trait(item: &ItemTrait, mode: TraitMode) -> syn::Result<TokenStream2> 
         }
 
         // Inventory registration: lets `caravan_rpc::client::<dyn Trait>()`
-        // discover this trait's HttpClient constructor at runtime when the
-        // peer table marks the interface as http-mode.
+        // discover this trait's adapter constructor at runtime when the
+        // peer table marks the interface as http-mode or lambda-mode.
         ::caravan_rpc::__macro_support::inventory::submit! {
             ::caravan_rpc::HttpAdapterFactory {
                 interface_name: #interface_str,
                 type_id_fn: || ::std::any::TypeId::of::<dyn #trait_ident>(),
-                construct: |__url: ::std::string::String|
+                construct: |__peer: ::caravan_rpc::PeerEntry|
                     -> ::std::boxed::Box<dyn ::std::any::Any + ::std::marker::Send + ::std::marker::Sync> {
                     let __adapter: ::std::sync::Arc<dyn #trait_ident> =
-                        ::std::sync::Arc::new(#client_struct::new(__url));
+                        ::std::sync::Arc::new(#client_struct::from_peer(__peer));
                     ::std::boxed::Box::new(__adapter)
                 },
             }
@@ -371,14 +382,14 @@ fn emit_client_method(
 
     let dispatch_call = match mode {
         TraitMode::Sync => quote! {
-            ::caravan_rpc::dispatch::dispatch_sync(
-                &self.base_url, #interface, #method_str, __args
-            ).expect("caravan-rpc: dispatch_sync")
+            ::caravan_rpc::dispatch::dispatch_sync_by_peer(
+                &self.peer, #interface, #method_str, __args
+            ).expect("caravan-rpc: dispatch_sync_by_peer")
         },
         TraitMode::Async => quote! {
-            ::caravan_rpc::dispatch::dispatch_async(
-                &self.base_url, #interface, #method_str, __args
-            ).await.expect("caravan-rpc: dispatch_async")
+            ::caravan_rpc::dispatch::dispatch_async_by_peer(
+                &self.peer, #interface, #method_str, __args
+            ).await.expect("caravan-rpc: dispatch_async_by_peer")
         },
     };
 

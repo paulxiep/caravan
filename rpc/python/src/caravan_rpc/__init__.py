@@ -54,11 +54,37 @@ def provide(interface_cls, impl):
     _registry.register(interface_cls, impl)
 
 
+# Resources re-export lives after `provide` (which the resource adapters
+# call internally during auto_register). E402 is suppressed because the
+# load-order dependency is structural, not stylistic.
+from .resources import (  # noqa: E402
+    BlobStore,
+    LocalFsBlobStore,
+    MessageQueue,
+    RabbitMQQueue,
+    RedisStreamQueue,
+    S3BlobStore,
+    SqsQueue,
+    auto_register_resources,
+)
+
 __all__ = [
     "wagon",
     "provide",
     "client",
     "RpcRemoteError",
     "RpcTransportError",
+    # Resource seams (Caravan-shipped; users import + call client(BlobStore) etc.).
+    "BlobStore",
+    "MessageQueue",
+    # Concrete impls (mainly for testing or explicit construction; auto_register
+    # picks the right one based on env / yaml fallback for typical usage).
+    "LocalFsBlobStore",
+    "S3BlobStore",
+    "RedisStreamQueue",
+    "RabbitMQQueue",
+    "SqsQueue",
+    # Bootstrap helper — call once at process startup.
+    "auto_register_resources",
     "__version__",
 ]

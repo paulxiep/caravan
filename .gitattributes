@@ -1,0 +1,6 @@
+# Golden test fixtures are compared byte-for-byte against `caravan compile`
+# output. The compiler emits LF line endings; Windows checkouts with
+# core.autocrlf=true would otherwise convert these files to CRLF on disk
+# and break TestSpecJSON / TestEmitComposeOverride.
+*.spec.json   text eol=lf
+*.golden.yaml text eol=lf

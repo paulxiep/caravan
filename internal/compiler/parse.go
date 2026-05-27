@@ -153,10 +153,18 @@ func parseTriggers(file string, n *yaml.Node, diag *Diagnostics, what string) []
 // inner mapping. Adding a new trigger kind is one entry here + one
 // const in kinds.go.
 var triggerParsers = map[TriggerKind]func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger){
-	TriggerHTTP:   func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) { t.HTTP = parseHTTPTrigger(file, n, diag) },
-	TriggerQueue:  func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) { t.Queue = parseQueueTrigger(file, n, diag) },
-	TriggerCron:   func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) { t.Cron = parseCronTrigger(file, n, diag) },
-	TriggerStream: func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) { t.Stream = parseStreamTrigger(file, n, diag) },
+	TriggerHTTP: func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) {
+		t.HTTP = parseHTTPTrigger(file, n, diag)
+	},
+	TriggerQueue: func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) {
+		t.Queue = parseQueueTrigger(file, n, diag)
+	},
+	TriggerCron: func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) {
+		t.Cron = parseCronTrigger(file, n, diag)
+	},
+	TriggerStream: func(file string, n *yaml.Node, diag *Diagnostics, t *Trigger) {
+		t.Stream = parseStreamTrigger(file, n, diag)
+	},
 }
 
 func parseTrigger(file string, item *yaml.Node, diag *Diagnostics, what string) (Trigger, bool) {
@@ -237,6 +245,7 @@ func parseSeam(file, name string, k, v *yaml.Node, diag *Diagnostics) *Seam {
 		"impl":         func(v *yaml.Node) { s.Impl = stringScalar(file, v, diag, what+".impl") },
 		"service_name": func(v *yaml.Node) { s.ServiceName = stringScalar(file, v, diag, what+".service_name") },
 		"env_file":     func(v *yaml.Node) { s.EnvFile = stringScalar(file, v, diag, what+".env_file") },
+		"image_target": func(v *yaml.Node) { s.ImageTarget = stringScalar(file, v, diag, what+".image_target") },
 	})
 	return s
 }
@@ -365,6 +374,11 @@ func parseTarget(file, name string, k, v *yaml.Node, diag *Diagnostics) *Target 
 		"entries":     func(v *yaml.Node) { t.Entries = parseEntryDispatchMap(file, v, diag, what+".entries") },
 		"seams":       func(v *yaml.Node) { t.Seams = parseSeamDispatchMap(file, v, diag, what+".seams") },
 		"composition": func(v *yaml.Node) { t.Composition = parseCompositionMap(file, v, diag, what+".composition") },
+		"creds_passthrough": func(v *yaml.Node) {
+			t.CredsPassthrough = boolScalar(file, v, diag, what+".creds_passthrough")
+		},
+		"aws_profile": func(v *yaml.Node) { t.AwsProfile = stringScalar(file, v, diag, what+".aws_profile") },
+		"backend":     func(v *yaml.Node) { t.Backend = parseBackendConfig(file, v, diag, what+".backend") },
 	})
 	if t.Runtime == "" {
 		diag.Error(nodeSpan(file, v), "%s requires `runtime:`", what)
@@ -425,6 +439,24 @@ func parseCompositionMap(file string, n *yaml.Node, diag *Diagnostics, what stri
 		out[k.Value] = parseCompositionOverride(file, v, diag, entryWhat)
 	})
 	return out
+}
+
+// parseBackendConfig parses `targets.<X>.backend:` into a BackendConfig.
+// Required when the target sets `creds_passthrough: true`; the validator
+// in normalize.go enforces this.
+func parseBackendConfig(file string, n *yaml.Node, diag *Diagnostics, what string) *BackendConfig {
+	if n == nil || n.Kind != yaml.MappingNode {
+		diag.Error(nodeSpan(file, n), "%s must be a mapping", what)
+		return nil
+	}
+	b := &BackendConfig{Span: nodeSpan(file, n)}
+	dispatchFields(file, n, diag, what, fieldMap{
+		"bucket":     func(v *yaml.Node) { b.Bucket = stringScalar(file, v, diag, what+".bucket") },
+		"lock_table": func(v *yaml.Node) { b.LockTable = stringScalar(file, v, diag, what+".lock_table") },
+		"region":     func(v *yaml.Node) { b.Region = stringScalar(file, v, diag, what+".region") },
+		"key":        func(v *yaml.Node) { b.Key = stringScalar(file, v, diag, what+".key") },
+	})
+	return b
 }
 
 // parseCompositionOverride accepts either a scalar string (treated as

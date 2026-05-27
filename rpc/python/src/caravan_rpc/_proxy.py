@@ -79,7 +79,17 @@ class _ClientProxy:
             )
         self._interface = interface_cls
         peers = _load_peers()
-        self._peer = peers.get(interface_cls.__name__)
+        peer = peers.get(interface_cls.__name__)
+        # Self-call guard: when this process is itself serving as the peer
+        # for this interface, the HTTP entry in the peer table would point
+        # back at us (peer containers reuse the consumer entry's image and
+        # share its CARAVAN_RPC_PEERS env var; CARAVAN_RPC_ROLE is the
+        # only distinguisher). Falling through to the local registry uses
+        # the `provide()`-d impl that the same process already registered.
+        role = os.environ.get("CARAVAN_RPC_ROLE", "")
+        if peer is not None and role == f"peer-{interface_cls.__name__}":
+            peer = None
+        self._peer = peer
 
     def __repr__(self) -> str:
         mode = self._peer.get("mode") if self._peer else "inproc(no-env)"
@@ -104,8 +114,8 @@ class _ClientProxy:
         if mode == "http":
             return _make_http_dispatcher(self._interface, method_name, peer["url"])
         if mode == "lambda":
-            raise NotImplementedError(
-                "lambda dispatch mode lands at M7 (SigV4 signing not yet implemented)"
+            return _make_lambda_dispatcher(
+                self._interface, method_name, peer["function_url"]
             )
         raise ValueError(
             f"unknown dispatch mode {mode!r} for {self._interface.__name__} "
@@ -178,3 +188,106 @@ def client(interface_cls: type) -> _ClientProxy:
     wrapping, no overhead. Call ``provide(interface_cls, impl)`` first.
     """
     return _ClientProxy(interface_cls)
+
+
+def _region_from_function_url(function_url: str) -> str:
+    """Extract the AWS region from ``https://<id>.lambda-url.<region>.on.aws/``.
+
+    Raises ``ValueError`` if the URL doesn't match the Function URL shape — the
+    M7 emitter only emits real Function URLs, so a mismatch is a wiring bug.
+    """
+    # urlparse keeps simple here; we just split on dots.
+    from urllib.parse import urlparse
+
+    host = urlparse(function_url).hostname or ""
+    parts = host.split(".")
+    # Expect <id>.lambda-url.<region>.on.aws (5 parts).
+    if len(parts) >= 5 and parts[1] == "lambda-url" and parts[3] == "on" and parts[4] == "aws":
+        return parts[2]
+    raise ValueError(f"can't extract region from non-Function-URL: {function_url!r}")
+
+
+def _make_lambda_dispatcher(
+    interface_cls: type, method_name: str, function_url: str
+) -> Callable[..., Any]:
+    """Build the per-call SigV4-signed dispatch closure for a Lambda Function URL.
+
+    botocore is a soft dep (``[lambda]`` extra). Import lazily so SDK users who
+    only use inproc/http dispatch don't need it installed.
+    """
+    try:
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+        from botocore.session import Session
+    except ImportError as exc:
+        raise RuntimeError(
+            "lambda dispatch requires the [lambda] extra: pip install caravan-rpc[lambda]"
+        ) from exc
+
+    path = _PATH_TEMPLATE.format(interface=interface_cls.__name__, method=method_name)
+    full_url = function_url.rstrip("/") + path
+    region = _region_from_function_url(function_url)
+
+    # Session resolves credentials via the default chain (env vars on Lambda,
+    # ECS container creds on Fargate, IAM role on EC2, etc). Created once per
+    # dispatcher; credential refresh is handled inside botocore.
+    session = Session()
+
+    def dispatch(*args: Any, **kwargs: Any) -> Any:
+        envelope = _codec.encode_call(interface_cls, method_name, *args, **kwargs)
+        body = json.dumps(envelope).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "X-Caravan-Rpc-Version": _WIRE_VERSION,
+        }
+
+        # Build + sign the request with SigV4 for the lambda service.
+        signed = AWSRequest(method="POST", url=full_url, data=body, headers=headers)
+        creds = session.get_credentials()
+        if creds is None:
+            raise RpcTransportError(
+                f"no AWS credentials available for lambda dispatch to {full_url}"
+            )
+        SigV4Auth(creds.get_frozen_credentials(), "lambda", region).add_auth(signed)
+
+        req = urllib.request.Request(
+            full_url,
+            data=body,
+            headers=dict(signed.headers.items()),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=_DEFAULT_TIMEOUT_SECONDS) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            err_payload: dict[str, Any] | None = None
+            try:
+                err_payload = json.loads(exc.read())
+            except (json.JSONDecodeError, ValueError):
+                err_payload = None
+            if (
+                isinstance(err_payload, dict)
+                and err_payload.get("ok") is False
+                and isinstance(err_payload.get("error"), dict)
+            ):
+                e = err_payload["error"]
+                raise RpcRemoteError(
+                    str(e.get("code", "Unknown")), str(e.get("message", ""))
+                ) from None
+            raise RpcTransportError(
+                f"HTTP {exc.code} from {full_url}: {exc.reason}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RpcTransportError(
+                f"transport failure to {full_url}: {exc.reason}"
+            ) from exc
+
+        response = json.loads(raw)
+        if response.get("ok") is True:
+            return _codec.decode_return(interface_cls, method_name, response.get("result"))
+        err = response.get("error", {}) or {}
+        raise RpcRemoteError(str(err.get("code", "Unknown")), str(err.get("message", "")))
+
+    dispatch.__name__ = f"{interface_cls.__name__}.{method_name}"
+    dispatch.__qualname__ = dispatch.__name__
+    return dispatch

@@ -33,6 +33,9 @@ func applyDefaults(doc *ParsedDoc) {
 	defaulters := []func(*ParsedDoc){
 		defaultOutputDir,
 		defaultSeamServiceNames,
+		defaultSeamPaths,
+		defaultHybridTargetFields,
+		defaultFargateTargetFields,
 	}
 	for _, fn := range defaulters {
 		fn(doc)
@@ -66,6 +69,121 @@ func defaultSeamServiceNames(doc *ParsedDoc) {
 	}
 }
 
+// defaultSeamPaths fills Seam.Path for single-entry plans where the seam
+// omits `path:` in yaml. The seam-path field is the load-bearing key the
+// resolve phase uses to identify which entry "owns" a seam (i.e. whose
+// peer-table the seam belongs to). Multi-entry plans (invoice-parse)
+// declare path explicitly per seam; single-entry plans (code-rag) can
+// leave it empty because the assignment is unambiguous. Without this
+// default, resolve.go::entriesUsingSeams returns empty for code-rag and
+// the consumer entry never gets CARAVAN_RPC_PEERS injected.
+//
+// Plans with multiple entries and any path-less seam are left as-is —
+// the user must declare paths explicitly there; validateSeamUses /
+// runtime errors surface the ambiguity rather than guessing.
+func defaultSeamPaths(doc *ParsedDoc) {
+	if len(doc.Entries) != 1 {
+		return
+	}
+	var soleEntryPath string
+	for _, e := range doc.Entries {
+		soleEntryPath = e.Path
+	}
+	if soleEntryPath == "" {
+		return
+	}
+	for _, s := range doc.Seams {
+		if s.Path == "" {
+			s.Path = soleEntryPath
+		}
+	}
+}
+
+// DefaultAwsProfile names the AWS profile compose containers
+// authenticate with via the mounted ~/.aws when the user didn't
+// declare one explicitly. Matches the M4-cloud-prereq onboarding
+// checklist's `aws configure --profile caravan-poc` step.
+const DefaultAwsProfile = "caravan-poc"
+
+// defaultHybridTargetFields fills derived defaults on targets that opt
+// into M4-cloud's hybrid-dev mode (creds_passthrough). Pure defaulting
+// — validation happens in validateHybridTarget.
+func defaultHybridTargetFields(doc *ParsedDoc) {
+	for _, t := range doc.Targets {
+		if !t.CredsPassthrough {
+			continue
+		}
+		if t.AwsProfile == "" {
+			t.AwsProfile = DefaultAwsProfile
+		}
+		if t.Backend != nil {
+			if t.Backend.Region == "" {
+				t.Backend.Region = t.Region
+			}
+			if t.Backend.Key == "" {
+				t.Backend.Key = doc.Name + "/" + t.Name + ".tfstate"
+			}
+		}
+	}
+}
+
+// DefaultVPCCIDR is the default IPv4 CIDR caravan uses for a Fargate
+// target's VPC when caravan.yaml doesn't pin one. /16 gives ~65k
+// addresses — more than any PoC needs, but matches the AWS default
+// for the QuickStart-style VPC wizard so the emitted HCL looks
+// idiomatic to anyone reviewing it.
+const DefaultVPCCIDR = "10.0.0.0/16"
+
+// DefaultCloudMapSuffix is the trailing label for the Cloud Map private
+// DNS namespace registered per Fargate target. The full namespace is
+// "<app>.<suffix>". Local is the AWS convention for non-routable
+// private namespaces (.local has no TLD collision risk).
+const DefaultCloudMapSuffix = "local"
+
+// defaultFargateTargetFields fills derived defaults on `runtime: fargate`
+// targets. Pure defaulting — validation happens in validateFargateTarget.
+//
+//   - AwsProfile defaults to DefaultAwsProfile (same as hybrid-dev so the
+//     state backend + ECR registry share the same identity).
+//   - Backend.Region / .Key default to Target.Region / "<app>/<target>.tfstate".
+//   - VPC.CIDR defaults to DefaultVPCCIDR ("10.0.0.0/16").
+//   - VPC.NAT defaults to "single" — adequate for staging; prod sets "ha".
+//   - CloudMapNamespace defaults to "<app>.local".
+//   - ECSClusterName defaults to "<app>-<target>".
+func defaultFargateTargetFields(doc *ParsedDoc) {
+	for _, t := range doc.Targets {
+		if t.Runtime != RuntimeFargate {
+			continue
+		}
+		if t.AwsProfile == "" {
+			t.AwsProfile = DefaultAwsProfile
+		}
+		if t.Backend != nil {
+			if t.Backend.Region == "" {
+				t.Backend.Region = t.Region
+			}
+			if t.Backend.Key == "" {
+				t.Backend.Key = doc.Name + "/" + t.Name + ".tfstate"
+			}
+		}
+		if t.VPC == nil {
+			t.VPC = &VPCConfig{}
+		}
+		if t.VPC.CIDR == "" {
+			t.VPC.CIDR = DefaultVPCCIDR
+		}
+		if t.VPC.NAT == "" {
+			t.VPC.NAT = "single"
+		}
+		if t.CloudMapNamespace == "" {
+			t.CloudMapNamespace = doc.Name + "." + DefaultCloudMapSuffix
+		}
+		if t.ECSClusterName == "" {
+			t.ECSClusterName = doc.Name + "-" + t.Name
+		}
+	}
+}
+
 // --- validators --------------------------------------------------------------
 
 // validator is one cross-ref / invariant check. Each is independent
@@ -87,6 +205,8 @@ func runValidators(doc *ParsedDoc, diag *Diagnostics) {
 		validateEntryLanguages,
 		validateResourceVariants,
 		validateTargetCompositionOverrides,
+		validateHybridTarget,
+		validateFargateTarget,
 	}
 	for _, fn := range pipeline {
 		fn(doc, diag)
@@ -327,6 +447,167 @@ func validateTargetCompositionOverrides(doc *ParsedDoc, diag *Diagnostics) {
 			}
 		}
 	}
+}
+
+// validateHybridTarget enforces the surface invariants for M4-cloud's
+// hybrid-dev mode (creds_passthrough: true):
+//
+//  1. runtime must be docker-compose (M4-cloud emits compose +
+//     HCL together; aws-runtime cloud-compute lands at M4b/M7).
+//  2. region must be declared so HCL emit knows where to point the
+//     AWS provider.
+//  3. backend.bucket and backend.lock_table must be set (referenced
+//     by HCL backend.tf; pre-created in M4-cloud-prereq).
+//  4. at least one resource must resolve to cloud-managed — either
+//     via default_composition or a per-resource composition override
+//     or the resource's own declaration. Pure-oss-local targets have
+//     no business mounting ~/.aws.
+func validateHybridTarget(doc *ParsedDoc, diag *Diagnostics) {
+	for _, t := range doc.Targets {
+		if !t.CredsPassthrough {
+			// Backend declared without creds_passthrough is suspicious
+			// but tolerated; M4b may use backend without hybrid mode.
+			continue
+		}
+		if t.Runtime != RuntimeDockerCompose {
+			diag.Error(t.Span,
+				"targets.%s.creds_passthrough requires runtime=%s (got %q)",
+				t.Name, RuntimeDockerCompose, t.Runtime)
+		}
+		if t.Region == "" {
+			diag.Error(t.Span,
+				"targets.%s.creds_passthrough requires `region:` for HCL provider config",
+				t.Name)
+		}
+		if t.Backend == nil {
+			diag.Error(t.Span,
+				"targets.%s.creds_passthrough requires `backend:` (state bucket + lock table from M4-cloud-prereq)",
+				t.Name)
+		} else {
+			if t.Backend.Bucket == "" {
+				diag.Error(t.Backend.Span, "targets.%s.backend.bucket is required", t.Name)
+			}
+			if t.Backend.LockTable == "" {
+				diag.Error(t.Backend.Span, "targets.%s.backend.lock_table is required", t.Name)
+			}
+		}
+		if !targetHasCloudManagedResource(doc, t) {
+			diag.Error(t.Span,
+				"targets.%s.creds_passthrough is set but no resource resolves to cloud-managed (set default_composition or per-resource composition override)",
+				t.Name)
+		}
+	}
+}
+
+// validateFargateTarget enforces the surface invariants for M4b's Fargate
+// placement (runtime: fargate):
+//
+//  1. CredsPassthrough must be false — Fargate task roles replace the
+//     `~/.aws` mount; the hybrid-dev cred-passthrough path is the wrong
+//     authentication model for cloud compute.
+//  2. region must be declared so HCL emit knows where to point the AWS
+//     provider + VPC + ECS cluster.
+//  3. backend.bucket and backend.lock_table must be set (state must be
+//     remote; local state on a deploy box would mean apply requires the
+//     same laptop).
+//  4. VPC.NAT must be a known value when explicitly set ("single" / "ha").
+//  5. at least one Fargate placement signal must be present — either an
+//     entry marked `runtime: fargate` (in v1 yaml shape via the
+//     EntryDispatchMode struct, when added) or a seam with mode=container
+//     declared in t.Seams. A bare runtime=fargate target with no Fargate
+//     consumers has nothing to compile.
+//
+// Note on (5): the entry-level `runtime: fargate` per-entry field is
+// added in session 2 alongside the ECS emitter. For session 1, only the
+// seam-via-t.Seams[name]=container path is checked. This is sufficient
+// for code-rag's staging-fargate demo shape where chat is the only entry
+// and Embedder is the only Fargate seam peer.
+func validateFargateTarget(doc *ParsedDoc, diag *Diagnostics) {
+	for _, t := range doc.Targets {
+		if t.Runtime != RuntimeFargate {
+			continue
+		}
+		if t.CredsPassthrough {
+			diag.Error(t.Span,
+				"targets.%s.runtime=fargate is incompatible with creds_passthrough (Fargate task roles replace the ~/.aws mount)",
+				t.Name)
+		}
+		if t.Region == "" {
+			diag.Error(t.Span,
+				"targets.%s.runtime=fargate requires `region:` for VPC + ECS cluster emission",
+				t.Name)
+		}
+		if t.Backend == nil {
+			diag.Error(t.Span,
+				"targets.%s.runtime=fargate requires `backend:` (state bucket + lock table from M4-cloud-prereq)",
+				t.Name)
+		} else {
+			if t.Backend.Bucket == "" {
+				diag.Error(t.Backend.Span, "targets.%s.backend.bucket is required", t.Name)
+			}
+			if t.Backend.LockTable == "" {
+				diag.Error(t.Backend.Span, "targets.%s.backend.lock_table is required", t.Name)
+			}
+		}
+		if t.VPC != nil && t.VPC.NAT != "" && t.VPC.NAT != "single" && t.VPC.NAT != "ha" {
+			diag.Error(t.VPC.Span,
+				"targets.%s.vpc.nat must be \"single\" or \"ha\" (got %q)",
+				t.Name, t.VPC.NAT)
+		}
+		// Fargate needs at least one container-mode consumer — either a
+		// container-mode seam (peer service in its own task) or a
+		// container-mode entry (the main user-code task). Pure-Lambda +
+		// inproc-seams targets (M7's invoice-parse prod-mixed shape) have
+		// container entries even with no container seams.
+		hasContainerConsumer := false
+		for _, mode := range t.Seams {
+			if mode == SeamContainer {
+				hasContainerConsumer = true
+				break
+			}
+		}
+		if !hasContainerConsumer {
+			for _, mode := range t.Entries {
+				if mode == EntryContainer {
+					hasContainerConsumer = true
+					break
+				}
+			}
+		}
+		if !hasContainerConsumer {
+			diag.Error(t.Span,
+				"targets.%s.runtime=fargate has no Fargate consumers (declare at least one entry or seam with mode=container)",
+				t.Name)
+		}
+	}
+}
+
+// targetHasCloudManagedResource reports whether at least one declared
+// resource would resolve to CompositionCloudManaged under the given
+// target. Mirrors resolveComposition's precedence order without
+// requiring a full resolve.
+func targetHasCloudManagedResource(doc *ParsedDoc, t *Target) bool {
+	for name, r := range doc.Resources {
+		if r == nil {
+			continue
+		}
+		if override, ok := t.Composition[name]; ok && override != nil && override.Mode != "" {
+			if override.Mode == CompositionCloudManaged {
+				return true
+			}
+			continue
+		}
+		if r.Composition != "" {
+			if r.Composition == CompositionCloudManaged {
+				return true
+			}
+			continue
+		}
+		if t.DefaultComposition == CompositionCloudManaged {
+			return true
+		}
+	}
+	return false
 }
 
 // --- helpers -----------------------------------------------------------------

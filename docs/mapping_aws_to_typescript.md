@@ -1,5 +1,7 @@
 # AWS → TypeScript Stack Mapping & Emulation Quality
 
+> ⚠️ **HISTORICAL — pre-SDK research notes; TypeScript SDK is namespace-reserved only.** Current SDK namespace at [`../rpc/typescript/`](../rpc/typescript/) is a 0.0.1 placeholder; TypeScript is out of PoC scope per [`development_plan.md`](development_plan.md). Snapshot 2026-05-16; do not assume any specific row is current.
+
 > **Snapshot date: 2026-05-16.** References `aws_service_groups.md` for AWS-side detail and `mapping_typescript_to_aws.md` for the reverse direction.
 > **Scope**: TypeScript / JavaScript ecosystem. "Wire-compatible" means *the official `@aws-sdk/client-*` package (or relevant driver) talks to a local container via an `endpoint` config option or DSN swap without code changes*. Python and Rust mirrors live in `mapping_aws_to_python.md` / `mapping_aws_to_rust.md`.
 > **Framing**: TypeScript ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v3.md` (long-form derivation; supersedes v2). The emulation-quality bands below are **orthogonal to v3's T0/T1/T2 service tiers** — see the note after the bands table.

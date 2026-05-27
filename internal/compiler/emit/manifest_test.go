@@ -163,7 +163,7 @@ func TestEmitManifestPatches_PythonEntryWritesBuildContext(t *testing.T) {
 	if !strings.Contains(body, "pydantic>=2") {
 		t.Errorf("emitted manifest dropped user deps:\n%s", body)
 	}
-	if !strings.Contains(body, "caravan-rpc>=0.1.0") {
+	if !strings.Contains(body, "caravan-rpc>=0.1.1") {
 		t.Errorf("emitted manifest missing caravan-rpc line:\n%s", body)
 	}
 
@@ -237,7 +237,7 @@ func TestEmitManifestPatches_UserManifestMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "caravan-rpc>=0.1.0") {
+	if !strings.Contains(string(body), "caravan-rpc>=0.1.1") {
 		t.Errorf("missing caravan-rpc line:\n%s", string(body))
 	}
 }

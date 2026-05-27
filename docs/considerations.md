@@ -1,5 +1,7 @@
 # Considerations — from thesis + v4 to "where to start designing"
 
+> ⚠️ **HISTORICAL — pre-entries+seams reframing.** This memo dates from before the 2026-05-17 PoC restructure that collapsed `modules` + `bundles` into `entries:` + `seams:` + per-target dispatch. Live open items are in [`../open_decisions.md`](../open_decisions.md); current authoritative docs are [`thesis.md`](thesis.md) and [`development_plan.md`](development_plan.md). Several items here (notably the A-J disposition set) are partially superseded; treat as background, not as current scope.
+
 Scoping memo. Inputs are [`thesis.md`](thesis.md) and [`caravan_abstraction_v4.md`](caravan_abstraction_v4.md) (the two canonical living documents; earlier abstraction docs and the architecture brainstorm have been deleted).
 
 Output is meant to be read once, used to align, then either edited (to push back) or used to seed the next concrete design doc.

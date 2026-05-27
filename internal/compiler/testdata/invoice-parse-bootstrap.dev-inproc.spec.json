@@ -139,6 +139,7 @@
       "AWS_ACCESS_KEY_ID": "minioadmin",
       "AWS_REGION": "us-east-1",
       "AWS_SECRET_ACCESS_KEY": "minioadmin",
+      "CARAVAN_BLOB_BACKEND": "local-fs",
       "DATABASE_URL": "postgresql://caravan:caravan@postgres:5432/caravan",
       "QUEUE_URL": "redis://redis:6379",
       "S3_ENDPOINT_URL": "http://minio:9000"

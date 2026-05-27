@@ -47,6 +47,12 @@
 
 #![forbid(unsafe_code)]
 
+// `#[wagon]`-generated code emits `::caravan_rpc::...` paths. Inside this
+// crate we re-alias the crate's own name so the macro works on traits
+// declared internally (e.g. the `resources::BlobStore` / `MessageQueue`
+// seams shipped from caravan-rpc itself).
+extern crate self as caravan_rpc;
+
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
@@ -56,6 +62,7 @@ pub use caravan_rpc_macros::wagon;
 pub mod codec;
 pub mod errors;
 pub mod peers;
+pub mod resources;
 
 #[cfg(feature = "client")]
 pub mod dispatch;
@@ -65,6 +72,15 @@ pub mod server;
 
 pub use errors::{RpcError, RpcRemoteError, RpcTransportError};
 pub use peers::{PeerEntry, peer_for};
+#[cfg(feature = "resources-rabbit")]
+pub use resources::RabbitMQQueue;
+#[cfg(feature = "resources-redis")]
+pub use resources::RedisStreamQueue;
+pub use resources::{
+    BlobError, BlobStore, LocalFsBlobStore, MessageQueue, QueueError, auto_register_resources,
+};
+#[cfg(feature = "resources-aws")]
+pub use resources::{S3BlobStore, SqsQueue};
 
 /// Internal re-exports for use by `#[wagon]`-generated code only. Lets the
 /// user's crate depend solely on `caravan-rpc`; the macro reaches in here
@@ -81,19 +97,22 @@ pub mod __macro_support {
     pub use serde_json;
 }
 
-/// Factory entry for a `#[wagon]` trait's HTTP client adapter.
+/// Factory entry for a `#[wagon]` trait's remote client adapter.
 ///
 /// Macro-generated code submits one of these per full-codegen trait via
 /// `inventory::submit!` so `client::<dyn T>()` can discover the
-/// trait-specific HttpClient constructor at runtime, indexed by `TypeId`.
+/// trait-specific client constructor at runtime, indexed by `TypeId`.
 ///
-/// `construct` returns the HttpClient wrapped as `Arc<dyn T>` then erased
-/// into `Box<dyn Any + Send + Sync>` (because `Arc<dyn T>: Any` for
-/// `T: 'static`). The SDK downcasts back to `Arc<T>` in `client::<T>()`.
+/// `construct` accepts a `PeerEntry` (HTTP or Lambda) and returns the
+/// adapter wrapped as `Arc<dyn T>` then erased into `Box<dyn Any + Send +
+/// Sync>` (because `Arc<dyn T>: Any` for `T: 'static`). The SDK downcasts
+/// back to `Arc<T>` in `client::<T>()`. The macro-generated adapter
+/// internally branches per `PeerEntry` variant to pick HTTP-bearer or
+/// SigV4 dispatch at each call.
 pub struct HttpAdapterFactory {
     pub interface_name: &'static str,
     pub type_id_fn: fn() -> std::any::TypeId,
-    pub construct: fn(url: String) -> Box<dyn Any + Send + Sync>,
+    pub construct: fn(peer: PeerEntry) -> Box<dyn Any + Send + Sync>,
 }
 
 inventory::collect!(HttpAdapterFactory);
@@ -178,6 +197,17 @@ where
         let router = (factory.build_router_from_registry)().unwrap_or_else(|msg| {
             panic!("caravan-rpc: peer {iface_name} failed to build router: {msg}")
         });
+        // Lambda detection (M7). When AWS sets AWS_LAMBDA_RUNTIME_API, hand
+        // the axum router to lambda_http::run instead of binding a TCP
+        // socket. lambda_http translates Function URL events into
+        // tower::Service calls on the same router we use for HTTP peers.
+        if std::env::var("AWS_LAMBDA_RUNTIME_API").is_ok() {
+            eprintln!("caravan peer {iface_name} serving via Lambda runtime");
+            lambda_http::run(router)
+                .await
+                .expect("lambda_http::run returned error");
+            return Ok(());
+        }
         let addr: std::net::SocketAddr = std::env::var("CARAVAN_RPC_BIND_ADDR")
             .unwrap_or_else(|_| "0.0.0.0:8080".to_string())
             .parse()
@@ -266,24 +296,35 @@ pub fn try_client<T: ?Sized + Send + Sync + 'static>() -> Option<Arc<T>> {
     // 1. If an HTTP factory exists for T (i.e., the trait was full-
     //    codegen-expanded by `#[wagon]`), consult the peer table.
     if let Some(factory) = lookup_http_factory::<T>() {
-        match peer_for(factory.interface_name) {
-            Some(PeerEntry::Http { url }) => {
-                let boxed = (factory.construct)(url);
-                return Some(
-                    *boxed
-                        .downcast::<Arc<T>>()
-                        .expect("caravan-rpc: HttpAdapterFactory.construct returned wrong type"),
-                );
+        // Self-call guard: when this process is itself running as the
+        // peer for `T` (CARAVAN_RPC_ROLE=peer-<factory.interface_name>),
+        // bypass the HTTP factory so the macro-emitted router's
+        // `try_client::<dyn T>()` returns the locally `provide()`-d impl
+        // instead of an HttpClient pointed back at us — that would loop.
+        // Crucially the consumer entry's binary AND the peer share the
+        // same CARAVAN_RPC_PEERS (peers reuse the entry's image); the
+        // role-env is the only distinguisher.
+        let serving_self = std::env::var("CARAVAN_RPC_ROLE")
+            .ok()
+            .and_then(|role| {
+                role.strip_prefix("peer-")
+                    .map(|iface| iface == factory.interface_name)
+            })
+            .unwrap_or(false);
+        if !serving_self {
+            match peer_for(factory.interface_name) {
+                Some(entry @ PeerEntry::Http { .. })
+                | Some(entry @ PeerEntry::Lambda { .. }) => {
+                    let boxed = (factory.construct)(entry);
+                    return Some(
+                        *boxed.downcast::<Arc<T>>().expect(
+                            "caravan-rpc: HttpAdapterFactory.construct returned wrong type",
+                        ),
+                    );
+                }
+                // Inproc or absent → fall through to local registry lookup.
+                _ => {}
             }
-            Some(PeerEntry::Lambda { .. }) => {
-                panic!(
-                    "caravan-rpc {VERSION}: Lambda dispatch for interface {:?} lands at M7 \
-                     (see caravan/docs/development_plan.md).",
-                    factory.interface_name
-                );
-            }
-            // Inproc or absent → fall through to local registry lookup.
-            _ => {}
         }
     }
 

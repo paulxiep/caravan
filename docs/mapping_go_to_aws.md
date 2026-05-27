@@ -1,5 +1,7 @@
 # Go Stack → AWS Mapping
 
+> ⚠️ **HISTORICAL — pre-SDK research notes; Go SDK is namespace-reserved only.** Current SDK namespace at [`../rpc/go/`](../rpc/go/) is a 0.0.1 placeholder; Go is out of PoC scope per [`development_plan.md`](development_plan.md). (Note: the compiler itself is written in Go, but caravan-rpc-go is not a PoC deliverable.) Snapshot 2026-05-16; do not assume any specific row is current.
+
 > **Snapshot date: 2026-05-16.** AWS prices reference `aws_service_groups.md`.
 > **Scope**: Go ecosystem (Go 1.22+). Python, Rust, and TypeScript mirrors live in `mapping_python_to_aws.md` / `mapping_rust_to_aws.md` / `mapping_typescript_to_aws.md`.
 > **Framing**: this file is Go ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v4.md` (long-form derivation; supersedes v3). The Cheapest/Production/Premium tier labels below are the **operator's intuition**; they map onto v4 §6's explicit yaml `tier:` vocabulary (`db.sql tier: dev | prod-small | prod | premium | global`, `bucket class: standard | intelligent | …`, etc.) — that mapping is shown inline per row and rolled up in the closing summary table.

@@ -1,5 +1,7 @@
 # Cloud Providers — primitive mapping and divergences
 
+> ℹ️ **REFERENCE DATA — snapshot 2026-05-16; GCP / Azure are out of PoC scope.** Useful evidence for the thesis's "cloud-agnostic primitives" claim, but PoC is AWS-only per [`development_plan.md`](development_plan.md). Re-verify provider specifics before quoting in any current decision.
+
 > **Snapshot date: 2026-05-16.** Read `thesis.md` first. This doc is evidence behind the thesis's commitment to cloud-agnostic primitives — that the caravan IR survives contact with non-AWS providers.
 
 ## Why this doc exists

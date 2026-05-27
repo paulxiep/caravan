@@ -16,7 +16,6 @@ import contextlib
 import json
 import os
 import socket
-import sys
 import threading
 import time
 from dataclasses import dataclass

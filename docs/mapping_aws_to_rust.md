@@ -1,5 +1,7 @@
 # AWS → Rust Stack Mapping & Emulation Quality
 
+> ⚠️ **HISTORICAL — pre-SDK research notes.** Current SDK contract lives at [`../rpc/rust/`](../rpc/rust/) (caravan-rpc + caravan-rpc-macros at 0.1.0). Authoritative docs are [`thesis.md`](thesis.md) and [`development_plan.md`](development_plan.md). Snapshot 2026-05-16; do not assume any specific row is current.
+
 > **Snapshot date: 2026-05-16.** References `aws_service_groups.md` for AWS-side detail and `mapping_rust_to_aws.md` for the reverse direction.
 > **Scope**: Rust ecosystem. Pragmatic Rust-first — services with no mature Rust crate are flagged but not detailed. "Wire-compatible" means *the official `aws-sdk-rust` crate (or relevant driver) talks to a local container via builder-time endpoint / DSN override without code changes*.
 

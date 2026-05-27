@@ -1,5 +1,7 @@
 # Go API Diffs: AWS ↔ Local Container
 
+> ⚠️ **HISTORICAL — pre-SDK research notes; Go SDK is namespace-reserved only.** Current SDK namespace at [`../rpc/go/`](../rpc/go/) is a 0.0.1 placeholder; Go is out of PoC scope per [`development_plan.md`](development_plan.md). Snapshot 2026-05-16; do not assume any specific row is current.
+
 > **Snapshot date: 2026-05-16.** References `aws_service_groups.md`, `mapping_go_to_aws.md`, `mapping_aws_to_go.md`.
 > **Framing**: Go ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v4.md` (long-form derivation; supersedes v3). The difficulty bands below map onto v4's T0/T1/T2 service tiers — see the row at the bottom of the bands table.
 

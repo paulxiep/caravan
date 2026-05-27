@@ -2,6 +2,8 @@
 
 Multi-session, milestone-driven plan from today's scoping-complete + code-empty state to a functioning PoC validated on two real test repos (code-rag, invoice-parse). The plan resolves a chicken-and-egg between building Caravan and adapting test repos by **bootstrapping on a real seam in invoice-parse before any compiler code lands** (milestone B0), then automating the proven shape via M0–M9.
 
+> **Freshness note (last updated 2026-05-26).** Milestone sections tagged "✅ landed" reflect post-implementation code state and are authoritative. Other Phase 2 sections (M4b onward) describe pre-implementation intent that may have stale details — when planning, **verify load-bearing claims against current code, not this plan**. The "Decided shape" / "Scoped" sub-headers inside individual milestones mark post-M4-cloud updates.
+
 ---
 
 ## Framing
@@ -725,49 +727,285 @@ Key M6 decisions:
 
 ## Phase 2 — Cloud (start only after M9 Phase 1 close is green)
 
-Cloud milestones land after Phase 1 is fully validated. Strongly descope-able as a group: if compose-only validation is sufficient evidence for your audience (PoC review, design doc, hiring portfolio), Phase 2 is skippable. Estimate: ~10 sessions if all three Phase-2 milestones land.
+Cloud milestones land after Phase 1 is fully validated. Strongly descope-able as a group: if compose-only validation is sufficient evidence for your audience (PoC review, design doc, hiring portfolio), Phase 2 is skippable. Estimate: ~13–14 sessions if all Phase-2 milestones land (M8 dropped per descope ladder).
 
-### M4-cloud — HCL emit + AWS resource provisioning (Phase 2, 3–4 sessions)
+**Re-scoped 2026-05-22** — Phase 2 split into hybrid-first / Fargate-first / Lambda-on-two-seams progression with an explicit AWS-onboarding prereq. Replaces the earlier monolithic M4-cloud + M7 + M8 + M9-cloud framing.
 
-**Demo.** Same code from M4, with `composition.uploads: cloud-managed`. `caravan compile --target=prod` emits HCL via `hclwrite`; `tofu plan` is human-reviewable; `tofu apply` provisions `aws_s3_bucket` + IAM policy. Same Rust/Python code that talked to MinIO in M4 now talks to real S3.
+### M4-cloud-prereq — AWS account bootstrap (Phase 2, 1 session, no caravan code)
+
+**Demo.** Verified-working AWS account state: `aws sts get-caller-identity --profile caravan-poc` returns the IAM user ARN; `tofu init` against the new state backend succeeds; AWS Budgets shows the spending cap.
 
 **Prereqs.** M9 (Phase 1 close).
 
-**Work.** First HCL emitter via `hclwrite`. HCL-side resource emitters for the groups M5/M6 needed: `bucket` (`aws_s3_bucket`), `search` (`aws_opensearch_domain` or referenced ARN), `db.sql` (`aws_rds_instance`), `cache` (`aws_elasticache_cluster`), `queue` (`aws_sqs_queue`). IAM grants computed per `uses:` declarations.
+**Work** (AWS Console + shell, not in Caravan repo):
+- IAM user with programmatic access + MFA; root locked with MFA only.
+- AWS CLI install + `aws configure --profile caravan-poc`.
+- Billing alarm at $20/mo; AWS Budgets hard cap at $50/mo. Critical because zero personal-AWS spend history means a config bug can run up cost (OpenSearch alone is ~$25/mo idle).
+- S3 bucket + DynamoDB lock table for Terraform state backend (one-shot pre-create; chicken-and-egg-bootstrapped, doc-only).
+- ECR repositories (one per image: `code-rag-chat`, `invoice-parse-processing`, `invoice-parse-processing-slim`, etc.).
+- OpenTofu install.
 
-**Risk.** Terraform state backend bootstrapping. Mitigate by separating `caravan compile` (HCL on disk; gates this milestone) from `caravan up` (tofu apply; manual on first run).
+**Output.** `docs/aws_onboarding_checklist.md` — operational checklist + state-backend bucket/table names + ECR registry URIs, committed once and treated as user-side ground truth.
 
-### M7 — Lambda dispatch works for one seam (Phase 2, 3–4 sessions)
+**Why split out.** AWS-from-scratch is ~1 focused session; folding it into M4-cloud session 1 hides the cost and conflates ops with compiler work.
 
-**Demo.** `caravan compile --target=prod-mixed && caravan up` on either repo, where yaml sets one seam to `lambda`. The caller still uses `client(X)`; SDK detects lambda from `CARAVAN_RPC_PEERS` and SigV4-signs a POST to the Lambda Function URL.
+### M4-cloud — HCL emit + AWS resource provisioning (Phase 2, hybrid only, 3 sessions) — ✅ landed 2026-05-25
 
-**Prereqs.** M4-cloud.
+**Demo.** `caravan compile --target=hybrid-dev` emits HCL for the resource layer (S3 + RDS + SQS + ElastiCache); `tofu plan` is human-reviewable; `tofu apply` provisions them. Same Python/Rust code that talked to MinIO in M4 now talks to real S3 from a compose target with `creds_passthrough: true` (mounts `~/.aws`). **No cloud compute yet** — local processes, real cloud resources.
 
-**Work.**
-- SDK: `lambda` dispatch mode in Rust client (SigV4 via `aws-sigv4` crate). Server side: detect `AWS_LAMBDA_RUNTIME_API` and register Lambda handler instead of axum.
-- Phase 5: `aws_lambda_function` + Function URL (`AuthType: AWS_IAM`) + per-caller `lambda:InvokeFunctionUrl` IAM grant.
+**Prereqs.** M4-cloud-prereq.
 
-**Risk.** SigV4 signing edge cases; cold-start tax may make tests flaky. Do it by hand once (curl + aws-vault) before automating.
+**Status — done (2026-05-25, `implement-cloud-poc` branch).** Closes the resolve.go IAM-grant TODO and lands the first cloud emitter end-to-end.
 
-**Decision gates before M7.** Pin `caravan up` workflow (wrap `tofu apply -auto-approve` vs print-only). Pin Fargate-Fargate RPC mechanism (Cloud Map recommended).
+Caravan compiler additions:
+- ✅ HCL emitter package `internal/compiler/emit/hcl/` (`hclwrite` + cty). Per-resource emitters for `bucket` → `aws_s3_bucket`, `db.sql` → `aws_db_instance`, `queue` → `aws_sqs_queue`, `cache` → `aws_elasticache_cluster`, `search` → `aws_opensearch_domain` (gated on actual `uses:` to dodge OpenSearch's 20+ min provisioning + ~$25/mo idle).
+- ✅ Target IR extensions: kept `runtime: docker-compose` and added `creds_passthrough: bool` + `aws_profile` + `backend: { bucket, lock_table, region, key }` (replaces the dev-plan's tentative `docker-compose-cloud-hybrid` runtime — same outcome, cleaner IR; M4b reuses the cloud-managed composition without cred passthrough since Fargate task roles replace the `~/.aws` mount).
+- ✅ IAM grant resolution (`resolve_iam.go`): per-entry statements derived from `uses:` (producer perms) and `triggers:` (consumer perms), unioned for entries doing both (invoice-parse `output`). Attached to the `caravan-poc` IAM user via `aws_iam_user_policy` (M4b/M7 swap this for Fargate/Lambda roles).
+- ✅ Compose hybrid extensions: when `creds_passthrough: true`, mounts the developer's absolute `~/.aws` path into every app-profile service and injects `AWS_REGION` + `AWS_PROFILE`. Cloud-managed resources emit `${VAR}` passthroughs (S3_BUCKET, DATABASE_URL, QUEUE_URL, REDIS_URL, OPENSEARCH_URL) — the user runs `tofu output -json | jq -r '...' > .env.hybrid` once after `tofu apply`, then `docker compose --env-file .env.hybrid up`.
+- ✅ Generated artifacts (per target): `versions.tf` (provider pin `aws ~> 5.0`, `required_version >= 1.6.0`), `backend.tf` (S3 + DynamoDB), `main.tf` (provider + SG + resources + outputs), `iam.tf`, `docker-compose.override.generated.yaml`, `.env.template`, `README.md` (3-step run instructions).
+- ✅ Network reachability for VPC-only resources (RDS, ElastiCache): emits `data "http" "myip"` + a security group locked to laptop IP (dev-only; M4b introduces real VPC).
 
-**Descope.** Fargate-only if M5/M6 ran long; skip Lambda dispatch entirely.
+Caravan-rpc additions (resource adapters belong here, not in user repos):
+- ✅ Caravan-shipped resource adapters under `caravan_rpc.resources` (Python: `rpc/python/src/caravan_rpc/resources/`; Rust: `rpc/rust/caravan-rpc/src/resources/`). Two `@wagon`-decorated seams + concrete impls:
+  - `BlobStore` seam — `LocalFsBlobStore` (oss-local non-MinIO fallback), `S3BlobStore` (boto3 / aws-sdk-s3; serves MinIO with `S3_ENDPOINT_URL` set, real AWS without).
+  - `MessageQueue` seam — `RedisStreamQueue`, `RabbitMQQueue`, `SqsQueue` (boto3 / aws-sdk-sqs).
+- ✅ `auto_register_resources(yaml_fallback=...)` — one-line bootstrap user code calls at `main()`. Reads env vars (Caravan-injected) first, falls back to user-passed YAML config dict for non-Caravan local runs. User code never hand-writes a boto3 wrapper / SQS client / Redis client.
+- ✅ Optional dep gates: `caravan-rpc[aws|redis|rabbit]` (Python extras), `caravan-rpc { features = ["resources-aws", "resources-redis", "resources-rabbit"] }` (Rust features). The seam traits load with no extras; impls demand their backend libs at construction time.
 
-### M8 — Batch placement works for one entry (Phase 2, 2–3 sessions, strong descope candidate)
+User-repo touch points (invoice-parse):
+- ✅ caravan.yaml: `invoice_blobs: { type: bucket }` declared; added to all three entries' `uses:`. New `hybrid-dev` target with `creds_passthrough: true` + `region: ap-southeast-1` + `aws_profile: caravan-poc` + `backend: { ... }` pointing at the M4-cloud-prereq state bucket.
+- ✅ Worker code (Python `services/processing/worker.py`, Rust `services/ingestion/main.rs` + `services/output/main.rs`): single `auto_register_resources(yaml_fallback=...)` call at startup; subsequent uses go through `client(BlobStore).put(...)` / `client(MessageQueue).publish(...)`. No adapter classes authored in invoice-parse — the structural ask remains exactly the three-point SDK contract.
 
-**Demo.** `entries.code-raptor: batch` in a code-rag target; `caravan up` provisions AWS Batch; the job ingests one repo and writes embeddings to S3.
+End-to-end verification:
+- ✅ All caravan tests: 28 Go tests (compiler / emit / hcl), 66 Python (caravan-rpc) + 2 skipped (boto3/redis not in dev venv), 54 Rust (caravan-rpc).
+- ✅ `caravan compile --target=dev-bootstrap` (Phase-1 regression check): emits clean compose override, no leftover adapter references.
+- ✅ `caravan compile --target=hybrid-dev`: emits HCL + compose override + env.template + README.
+- ✅ Real-AWS apply/destroy loop (account `351090596944`, ap-southeast-1, 2026-05-25): `tofu init` → `tofu plan` (7 resources, human-reviewable, no surprises) → `tofu apply` (S3 + SG + SQS + 3× IAM + RDS, 4m56s for RDS) → AWS-CLI verification (S3 listable, SQS ARN returned, RDS `available` postgres 16.13, 3 user-policies attached to caravan-poc) → `tofu destroy` clean.
+
+Deferred to later milestones:
+- ⏸️ Live `docker compose up` against the provisioned AWS resources — the resource adapter wiring is unit-tested through `auto_register_resources` + `client(BlobStore)`, but the data-plane round-trip (PDF → ingest writes real S3 + SQS → processing reads real S3 + writes real RDS + publishes real SQS → output writes real S3) is left for a Phase-2 close-out session alongside M9-cloud.
+- ⏸️ Cache + Search adapter impls in caravan-rpc (no user repo consumes cache or search yet; first real test lands at M9-cloud when code-rag enters Phase 2).
+- ⏸️ DB-pool adapter in caravan-rpc (sqlalchemy engine / sqlx pool wrapper). Imposes ORM choice on users; design discussion pending. invoice-parse keeps direct sqlalchemy/sqlx for now.
+
+**Risk (original).** OpenSearch domains are 20+ minutes to provision. Mitigated by gating emit on actual use; default tier `dev` (smallest instance). In practice, never triggered for invoice-parse.
+
+### M4b — First Fargate placement (Phase 2, 3–4 sessions) — ✅ landed 2026-05-26
+
+**Scoped 2026-05-26** — demo target switched to **code-rag** (invoice-parse has no inter-entry caravan-rpc seams, so Cloud Map RPC would be decorative there); compute-placement abstraction lands here as M7's plug-in interface; D10/D11 resolved inline.
+
+**Status — done (2026-05-26, `implement-cloud-poc` branch).** Closes the M4b emit + CLI surface. Real `tofu apply` against the user's AWS account is the user's runbook (printed by `caravan up`); end-to-end against live AWS deferred to the user's first run.
+
+Caravan compiler additions:
+- ✅ `RuntimeFargate` enum (kinds.go) replacing the placeholder `RuntimeAWS`. M7 reserves a `RuntimeLambda` slot alongside.
+- ✅ `PrincipalKind` enum (kinds.go) + `PrincipalForTarget(target)` helper: routes IAM emit between `IAMUser` (hybrid-dev), `FargateTaskRole` (M4b), and `LambdaExecutionRole` (M7 stub returns nil).
+- ✅ `VPCConfig` struct + Target fields `VPC`, `CloudMapNamespace`, `ECSClusterName` (types.go).
+- ✅ `Target.EmitsHCL()` predicate (types.go): generalizes the HCL gate from "CredsPassthrough OR Fargate" to "Backend != nil" so M7 doesn't extend the disjunction.
+- ✅ `defaultFargateTargetFields` + `validateFargateTarget` (normalize.go): defaults VPC CIDR `10.0.0.0/16`, NAT `single`, Cloud Map namespace `<app>.local`, ECS cluster `<app>-<target>`; validates CredsPassthrough must be false, region required, backend required, at least one seam in container mode.
+- ✅ `peerBuilders` take `*Target` (resolve.go); `buildContainerPeer` emits Cloud Map FQDN (`http://embedder.code-rag.local:8080`) on Fargate, bare hostname on compose. Single thesis-claim test: same seam, same yaml shape, dispatch URL differs by target.
+
+Caravan HCL emitter additions:
+- ✅ `internal/compiler/emit/hcl/iam.go` — **refactored**: `renderIAM` dispatches on `PrincipalForTarget`. `PrincipalIAMUser` path unchanged (M4-cloud regression-safe); `PrincipalFargateTaskRole` emits per-entry `aws_iam_role` + `aws_iam_role_policy` with the ecs-tasks.amazonaws.com assume-role policy; `PrincipalLambdaExecutionRole` returns nil so iam.tf is skipped (M7 fills in).
+- ✅ New file `internal/compiler/emit/hcl/vpc.go` — VPC + 2-AZ subnets (public + private) + IGW + single NAT + route tables + tasks SG (intra-SG on 8080, egress all). Kept separate from compute emitters so future placements share the network layer.
+- ✅ New file `internal/compiler/emit/hcl/compute.go` — `emitComputeForTarget` dispatch + `fargateConsumers` enumeration (entries always get tasks; seams in container mode get tasks + Cloud Map services). M7 adds Lambda as a new case.
+- ✅ New file `internal/compiler/emit/hcl/compute_fargate.go` — ECS cluster + Cloud Map private DNS namespace + per-target execution role (with `AmazonECSTaskExecutionRolePolicy` attached) + per-consumer ECR data lookup + task def (one container per task, CARAVAN_RPC_PEERS env, awslogs CloudWatch config) + ECS service (private subnets, tasks SG, no public IP) + per-seam Cloud Map service registry.
+- ✅ `hcl.go` — laptop-IP SG gated away from Fargate targets; `emitVPC` + `emitComputeForTarget` called for Fargate; `EmitHCL` accepts any AWS-producing target via `EmitsHCL()`.
+
+Caravan CLI additions:
+- ✅ Extracted `compileAndEmit(config, target)` shared helper (cmd/caravan/main.go). `runCompile` becomes a thin wrapper.
+- ✅ `resolveTargetName` helper — every subcommand (compile / up / down) falls back to `caravan.yaml`'s `default_target:` when `--target` is omitted. Mirrors docker / docker compose ergonomics.
+- ✅ New two-phase deploy flow (cmd/caravan/up.go):
+  - `caravan compile [--target=X]` emits HCL into `<outputDir>/<target>/generated/`. User may hand-edit before deploying.
+  - `caravan up [--target=X]` operates on the **on-disk HCL** (no recompile — user edits survive). For each container-mode entry: resolves ECR URI via `aws ecr describe-repositories`, runs `docker build` (with `--target` for multi-stage), `aws ecr get-login-password | docker login`, `docker tag`, `docker push`. Then runs `tofu -chdir=<outDir> init` and `tofu -chdir=<outDir> apply` interactively — tofu shows the plan and prompts for confirmation; caravan never bypasses it. Seams reuse the host entry's image (dual-role binary pattern).
+  - `caravan down [--target=X]` runs `tofu init` + `tofu destroy` against the on-disk HCL. ECR images persist for the next `caravan up`.
+  - **D10 (revised 2026-05-26)**: caravan owns the tofu invocation; user never types a tofu command directly. Tofu's interactive plan + apply prompt is the human-review step. Auditable-HCL principle satisfied by (a) HCL on disk for review/edit, (b) tofu's plan output streamed to stdout, (c) explicit confirmation before any resource changes.
+- ✅ New `EmitFargateReadme` (internal/compiler/emit/env_template.go) — Fargate-flavored README.md documenting the compile → review/edit → caravan up → caravan down flow. No tofu command in the user-facing instructions.
+
+User-repo touch points:
+- ✅ code-rag/caravan.yaml: new `staging-fargate` target (runtime: fargate, region ap-southeast-1, backend pointing at M4-cloud-prereq state, code-rag-chat as Fargate entry, Embedder as container seam; Reranker / VectorReader / LlmClient stay inproc, VectorReader must stay inproc because `#[wagon(identity)]`).
+- ✅ **Zero Rust code changes.** The 4 seams in `crates/code-rag-store/src/seams.rs` are M5-complete; staging-fargate is a pure yaml-line flip.
+
+End-to-end verification:
+- ✅ All caravan Go tests pass: 28+ existing tests still green, new `TestEmitHCL_FargateMulti` exercises VPC + ECS + Cloud Map + Fargate IAM + Cloud Map FQDN dispatch URL.
+- ✅ Phase 1 regression: `caravan compile --target=dev-split-light` (code-rag) emits clean compose with bare-hostname peer URL (`http://embedder:8080`) — no Cloud Map leakage.
+- ✅ `caravan compile --target=staging-fargate` emits 4 files: versions.tf, backend.tf, main.tf (~300 lines), README.md.
+- ✅ `tofu init -backend=false && tofu validate` against the emitted HCL: **"Success! The configuration is valid."** AWS provider 5.100.0 resolves; all resource references typecheck.
+- ⏸️ Live `tofu apply` against real AWS: deferred to the user (runs against `caravan-poc` profile, costs NAT + Fargate-task time while running). Runbook printed by `caravan up` + emitted in README.md.
+
+Deferred to later milestones:
+- ⏸️ Multi-container Fargate beyond the chat+Embedder pair (M5 / M9-cloud).
+- ⏸️ **Fargate × cloud-managed-resource cross-product — deferred to M9-cloud.** code-rag's `staging-fargate` declares no resources, so M4b never exercised this cell. Two known latent issues (called out in the M9-cloud work list above): (1) RDS / ElastiCache SG refs hardcode the hybrid-dev laptop-IP SG (`aws_security_group.caravan_dev.id`) which doesn't exist on Fargate targets — will produce undeclared-reference errors at tofu plan; (2) resource env vars in Fargate task defs use `${VAR}` literals instead of HCL refs (`aws_db_instance.X.endpoint`) so the container would see literal `${...}` strings. Not merged anywhere yet — no need to fence with a validator. M9-cloud has invoice-parse-on-Fargate as the natural forcing function.
+- ⏸️ HA NAT (`nat: ha`) — v1.1 flag, single NAT shipped for v1.
+- ⏸️ External ingress for chat task (currently private-subnet-only; user reaches it via `aws ecs execute-command` for testing). ALB-fronted public ingress is a follow-up if production scope arrives.
+
+**Risk (original).** ECR push timing vs Fargate task def creation — mitigated by emit-then-push-then-apply ordering: `caravan up` pushes images before the user runs `tofu apply`, so by the time ECS pulls the image, it exists in the repo.
+
+### M7 — Lambda dispatch on two seams, Rust + Python (Phase 2, 3–4 sessions)
+
+**Status: ✅ IMPLEMENTED (2026-05-26)** — compose/HCL emit, both SDKs, both demo seams shipped and clippy/fmt/ruff-clean. AWS E2E + cold-start measurement defer to M9-cloud per the agreed scope split (no `lambda-mixed` compose variant — see "Deviations" below).
+
+**Demo (shipped).** Two seams flip to `lambda` mode across two languages:
+- **Rust:** code-rag `IntentClassifier` carved from `code-rag-engine::intent`. Pure CPU, naturally slim (no fastembed in the Lambda image — caller passes the embedding).
+- **Python:** invoice-parse `ValidateExtraction` carved from `validate_extraction()` at `services/processing/invoice_processing/validation.py:195`. Pure pydantic transforms; opt-in `lambda-slim` Dockerfile stage (no PaddleOCR/torch) bound via the new `seams.X.image_target:` yaml field.
+
+Same source, yaml flip per seam. SigV4-signed POST to Function URL with `AuthType: AWS_IAM`. Mirrors Phase 1's two-language per-seam-mode proof, now on Lambda.
+
+**Prereqs.** M4b. M7 plugs into M4b's `ComputeEmitter` interface and fills the `LambdaExecutionRole` principal-type placeholder in `iam.go` — no parallel emitter code, no revisit of M4b's files.
+
+**Work — SDK side (shipped).**
+- Rust SDK: `lambda` dispatch via `aws-sigv4` + `aws-credential-types` + `aws-config`. Lambda runtime detection in `run_or_serve` via `AWS_LAMBDA_RUNTIME_API`; the axum router is handed to `lambda_http::run` instead of binding TCP. `HttpAdapterFactory.construct` now takes `PeerEntry` (not `String`); the generated `<Trait>HttpClient` stores the variant and per-call branches between `dispatch_sync` (bearer) and `dispatch_sync_sigv4` (SigV4). `PeerEntry::Lambda` panic stub replaced with real dispatch. New unit test: `region_extracted_from_function_url` (`dispatch.rs`).
+- Python SDK: SigV4 via `botocore.auth.SigV4Auth` (new `[lambda]` extra; lazy-imported in `_proxy.py`). New `caravan_rpc.lambda_handler` module — Function URL event v2.0 handler, reads `CARAVAN_RPC_LAMBDA_INTERFACE` / `_IMPL` / `_INTERFACE_MODULE` env vars at cold start, dispatches per invocation. Replaces the `NotImplementedError` branch in `_proxy.py` for `mode: lambda`.
+- **Auth split**: `mode: lambda` uses SigV4 only (no bearer); `mode: http` keeps bearer. The compiler's `resolve.go` already supports omitting `CARAVAN_RPC_SHARED_SECRET` for Lambda peers; injection lands as needed.
+
+**Work — Compiler side (shipped).**
+- New `compute_lambda.go`: `ComputeEmitter`-style emitter (`emitLambdaSeams`) called from `renderMain` whenever a target has any `SeamLambda` seam. Emits `aws_lambda_function` (container image, image URI = host entry's ECR repo + `lambda-<seam>` tag), `aws_lambda_function_url` (AuthType=AWS_IAM), shared `aws_iam_role.caravan_lambda_execution` (assume `lambda.amazonaws.com` + `AWSLambdaBasicExecutionRole` attachment), and per-seam `CARAVAN_RPC_<seam>_FUNCTION_URL` tofu output.
+- Per-caller `lambda:InvokeFunctionUrl` IAM grants: `resolve_iam.go`'s `lambdaInvokeStatements` adds one statement per Lambda seam to each container-mode entry's task role policy. `iam.go`'s `iamResourceExpr` recognizes `compiler.ResourceKindLambdaCall` to produce `[aws_lambda_function.<seam>.arn]`.
+- New yaml field `seams.X.image_target:` (optional). When set, `caravan up` builds the host entry's Dockerfile with `--target=<stage>` for the Lambda peer image and pushes it under the `lambda-<seam>` tag. Parallel to `entries.X.runtime_target`. No new structural ask on user code; user opts in by adding a multi-stage `slim` Dockerfile target.
+- `buildLambdaPeer` (`resolve.go`) emits `${aws_lambda_function_url.<seam>.function_url}` as the `function_url` placeholder; the HCL string literal's `${...}` interpolation resolves at `tofu apply` time. No more `TODO_LAMBDA_URL`.
+- Fargate validator (`normalize.go`) loosened: any container-mode entry or seam counts as a "Fargate consumer". Lets invoice-parse `prod-mixed` (Fargate entries + inproc + one Lambda seam) compile.
+
+**Work — code-rag refactor (shipped — IntentClassifier seam).**
+- Added `#[wagon] pub trait IntentClassifier` in `crates/code-rag-store/src/seams.rs` (5th wagon trait). `code-rag-engine`'s `IntentClassifier` struct + `ClassificationResult` got `Serialize + Deserialize`; the trait's return type uses the engine type directly (no wire shim needed, mirrors `LlmClient` more than `Reranker`).
+- New `code-rag-core/src/intent_local.rs` defines `LocalIntentClassifier` wrapping the engine struct; registered via `caravan_rpc::provide::<dyn IntentClassifier>` in `code-rag-core/src/state.rs`.
+- Flipped server call site at `src/api/handlers.rs:36` to `client::<dyn IntentClassifier>().classify(...)`. **Doc correction**: dev plan claimed two server-side call sites (`handlers.rs` + `code-rag-core/src/retriever.rs`); verification at impl time found only `handlers.rs:36` calls `intent::classify` server-side. WASM bundle (`code-rag-ui::standalone_api`) uses the concrete struct directly and stays unchanged — no feature gate needed since it never went through the trait. MCP + harness still consult `state.classifier` directly (out of M7 scope; cleanup is future work).
+- New `prod-mixed` target in `code-rag/caravan.yaml`: Fargate entries + `IntentClassifier: lambda`, everything else inproc. `staging-fargate` adds `IntentClassifier: inproc` for symmetry.
+
+**Work — invoice-parse refactor (shipped — ValidateExtraction seam).**
+- Wrapped `validate_extraction()` with `@wagon class ValidateExtraction` + `ValidateExtractionImpl` in `services/processing/invoice_processing/validation.py:195`. Mirrors the OCRLayout precedent.
+- Registered `provide(ValidateExtraction, ValidateExtractionImpl())` in `worker.py` alongside existing provides.
+- Flipped call site at `worker.py:208` to `client(ValidateExtraction).validate(...)`.
+- Two-stage `services/processing/Dockerfile`: `processing` (default, full image with PaddleOCR/paddlex/torch) and `lambda-slim` (AWS Lambda Python base image, `--no-deps` install of `invoice_processing` to skip the heavy pip deps the seam doesn't touch). Seam yaml sets `image_target: lambda-slim`.
+- New `prod-mixed` target in `invoice-parse/caravan.yaml`: Fargate entries (processing, ingest, output) + `ValidateExtraction: lambda`, all other seams inproc.
+
+**Acceptance (status).**
+- ✅ `caravan compile --target=prod-mixed` emits Lambda function + IAM + Function URL for both repos (verified end-to-end against the new HCL files).
+- ⏳ code-rag byte-identical chunk_ids vs Fargate path — defers to M9-cloud E2E sweep.
+- ⏳ invoice-parse byte-identical ValidationResult vs inproc path — defers to M9-cloud.
+- ⏳ Cold-start <2s in CloudWatch logs — defers to M9-cloud measurement.
+- ✅ `git diff -- crates/ src/ services/` is empty between `staging-fargate` and `prod-mixed` (yaml is the only diff). Once the M7 seam-carving commits are squashed, the diff guard becomes the steady-state acceptance.
+
+**Deviations from spec (intentional, agreed with user).**
+- **No `lambda-mixed` compose target.** M4b shipped `staging-fargate` without a parallel `fargate-mixed` local-compose-dispatches-to-real-Fargate variant; to preserve symmetry, M7 ships only `prod-mixed` and lets M9-cloud own all hybrid-local-to-real-AWS test variants in one sweep.
+- **Slim image strategy.** Resolved via new optional `seams.X.image_target:` yaml field (not a hardcoded `--target=slim` convention, not a synthesized Dockerfile). Users opt into a slim stage in their own Dockerfile and point Caravan at it; without the opt-in, the Lambda peer image is just the full entry image (works, slower cold-start). `caravan compile` could emit a one-line "tip" advisory; currently the user docs (post-M7) carry the recommendation instead.
+- **Pre-classify stays in caller.** The `intent::pre_classify_comparison` keyword filter (string match, no embedding) stays in `handlers.rs`; only embedding-based `classify` goes through the seam — no point round-tripping a query string over Lambda just to keyword-match.
+- **`HttpAdapterFactory.construct` signature change** (Rust SDK). Was `fn(url: String) -> ...`; now `fn(peer: PeerEntry) -> ...`. Necessary so the generated client can branch HTTP vs SigV4 internally. Affects only macro-generated code + the inline factory registrations — user code untouched.
+
+**Risk (resolved).** Per-seam slim image flavor turned out to be a clean fit for the existing `runtime_target`-on-entry pattern, just extended to seams. No "user-program-code invasion" — the user owns Dockerfile content.
+
+**Decision gate (resolved).** SigV4-only for lambda mode; bearer stays for http mode. Compiler omits `CARAVAN_RPC_SHARED_SECRET` from Lambda peer env.
+
+### M8 — Batch placement (DESCOPED)
+
+Dropped per descope ladder #2. AWS Batch is the heaviest emitter for the thinnest demo; code-raptor can run as a one-off `docker run` against real S3 if needed.
+
+### M9-cloud — Phase 2 close: 8 conditions across compose × Fargate × Lambda (2 sessions)
+
+**Demo.** Re-run M9's 8-condition testability matrix across compose × Fargate × Lambda for both repos. All 8 green across all cells. The full thesis claim — "yaml flips dispatch across packaging × placement × composition" — empirically proven on both compose and AWS.
 
 **Prereqs.** M7.
 
-**Why descopable.** Batch is the heaviest emitter for the thinnest demo. code-raptor can run as a one-off `docker run` and still demonstrate ingestion.
+**Work.**
+- Extend M9 E2E harness to drive `caravan up` to AWS targets.
+- Golden HCL files (`internal/compiler/emit/hcl/testdata/golden/<target>/*.tf`).
+- AWS cost-budget guard in CI: pre-deploy check via AWS Budgets API; fail if monthly forecast exceeds threshold.
+- Teardown automation: `caravan down --target=X` runs `tofu destroy` for sweep at end of CI runs. M4-cloud-prereq state backend persists; per-target resources don't.
+- **Fargate × cloud-managed-resource cross-product** (deferred from M4b; first real consumer is invoice-parse on Fargate here). Two known latent issues to fix:
+  1. **VPC-only resource security groups.** `emit/hcl/resources.go` (emitDBSQL `vpc_security_group_ids`, emitCache `security_group_ids`) hardcode `aws_security_group.caravan_dev.id` — the laptop-IP SG that only emits on hybrid-dev. For Fargate targets, emit a separate resources SG (or extend the tasks SG) that allows ingress from the Fargate tasks SG on the relevant ports (5432 for Postgres, 6379 for Redis). Parameterize emitDBSQL/emitCache on the SG ID rather than hardcoding the local name.
+  2. **Resource env var interpolation in Fargate task defs.** `emit/hcl/compute_fargate.go` (containerEnvEntries) currently emits `value = "${DATABASE_URL}"` as a string literal — works for compose (env_file shell-expands) but not for Fargate (HCL evaluates at apply time, container would see the literal `${...}`). Switch to direct HCL references (`value = aws_db_instance.X.endpoint` interpolated into the task-def env) so the container gets real endpoint strings.
+- Place RDS / ElastiCache inside the Fargate VPC (not publicly-accessible). Drop `publicly_accessible = true` on RDS for Fargate targets. db_subnet_group spans the private subnets.
 
-### M9-cloud — Phase 2 close: same 8 conditions across AWS targets (2 sessions)
+**Progress (M9-cloud — IN PROGRESS as of 2026-05-26).**
 
-**Demo.** Re-run M9's testability matrix against AWS targets (Fargate, Lambda). All 8 conditions green across compose AND cloud per-seam-mode combinations. The full thesis claim — "yaml flips dispatch across packaging × placement × composition" — is now empirically proven on both compose and AWS.
+Bug-fix landings in `internal/compiler/emit/hcl/`:
+- [x] [vpc.go](../internal/compiler/emit/hcl/vpc.go) — new `emitFargateResourcesSupport` emits `aws_security_group.caravan_resources` (ingress from `caravan_tasks` SG on 5432 + 6379) plus `aws_db_subnet_group.caravan_resources` and `aws_elasticache_subnet_group.caravan_resources` spanning the private subnets.
+- [x] [resources.go](../internal/compiler/emit/hcl/resources.go) — `emitDBSQL` and `emitCache` parameterized via new `resourceEmitOpts{SGName, IsFargate, DBSubnetGroup, CacheSubnetGroup}`. On Fargate: SG flips to `caravan_resources`, RDS gains `db_subnet_group_name`, `publicly_accessible = false`. hybrid-dev unchanged (`caravan_dev` SG, `publicly_accessible = true`).
+- [x] [hcl.go](../internal/compiler/emit/hcl/hcl.go) — `renderMain` selects opts per `target.Runtime`, calls `emitFargateResourcesSupport` after `emitVPC` when target declares any db.sql or cache resource.
+- [x] [compute_fargate.go](../internal/compiler/emit/hcl/compute_fargate.go) — `containerEnvEntries` now threads the per-resource `outputs` map through; new `taskDefEnvValue` rewrites compose-style `${VAR}` passthroughs into raw HCL refs (e.g. `value = aws_sqs_queue.X.url` or `value = "postgresql://user:pwd@${aws_db_instance.Y.endpoint}/db"`).
+- [x] [hcl_test.go](../internal/compiler/emit/hcl/hcl_test.go) — new `TestEmitHCL_FargateWithCloudManagedResources` synthesizes a Fargate target with S3 + RDS + SQS + Cache, asserts both fixes plus subnet groups + `publicly_accessible = false`.
 
-**Prereqs.** M7; M4-cloud.
+Compose / hybrid plumbing in `internal/compiler/emit/`:
+- [x] [compose.go](../internal/compiler/emit/compose.go) — `buildPythonPeerService` sets `build.target` (via host entry's `runtime_target`) and inherits the host entry's `env_file` when the seam doesn't override; `build.args.CARAVAN_TARGET` injected on every Python peer so multi-stage Dockerfiles whose stages reference `infra/${CARAVAN_TARGET}/…` resolve at buildkit cache-key time (buildkit walks every stage's COPY paths even when only one stage is selected).
+- [x] New `pickSeamHostEntry(rp, seam)` — alphabetically-first container entry whose `path:` matches the seam's, falls back to `pickHostEntry`. Generalizes the host-image lookup beyond the M2 single-entry assumption.
+- [x] [resource_endpoints.go](../internal/compiler/resource_endpoints.go) — emits explicit `CARAVAN_BLOB_BACKEND=s3` for cloud-managed buckets, `CARAVAN_BLOB_BACKEND=local-fs` for oss-local. SDK loud-fails when backend=s3 but `S3_BUCKET` is empty (catches the "user forgot to populate `.env.hybrid`" footgun); LocalFs on oss-local matches the M9 "MinIO emitted but skipped" behavior.
 
-**Work.** Extend M9's E2E harness to drive `caravan up` to AWS. Golden HCL files. AWS cost-budget guard in CI.
+Compiler defaults:
+- [x] [normalize.go](../internal/compiler/normalize.go) — new `defaultSeamPaths` defaulter: for single-entry plans, fills `Seam.Path` from the sole entry's path so `entriesUsingSeams` correctly identifies code-rag's chat entry as a seam host (multi-entry plans must still declare `path:` per seam).
+
+CLI in `cmd/caravan/`:
+- [x] [up.go](../cmd/caravan/up.go) — `runUp` dispatches on `target.Runtime` + `CredsPassthrough`:
+  - Fargate → existing `runUpFargate` (ECR build/push + tofu init/apply).
+  - Pure compose → new `runUpCompose` (`docker compose -f base -f override --profile app up -d --build`).
+  - Hybrid (compose + creds_passthrough) → new `runUpHybrid` (tofu init/apply, then `tofu output -json` → `.env.hybrid`, then compose up with `--env-file`).
+- [x] `runDown` mirrors: pure compose runs `docker compose down -v`; hybrid runs compose down THEN tofu destroy.
+- [x] `--build-arg CARAVAN_TARGET=<target>` threaded through `buildAndPushOne` + `buildAndPushLambdaSeam` for multi-stage Dockerfiles.
+- [x] `--profile app` hardcoded on compose invocations — caravan emit always tags peer services + resource containers with `profiles: [app]`, so the marker is fixed (a yaml `compose_profile:` field would have no material variability).
+
+SDK landings (caravan-rpc 0.1.0 → 0.1.1):
+- [x] **Rust** ([caravan-rpc/src/lib.rs](../rpc/rust/caravan-rpc/src/lib.rs)) — `try_client::<T>()` skips the inventory HTTP factory when `CARAVAN_RPC_ROLE=peer-<T>` matches — peer containers reuse the consumer entry's image + share its `CARAVAN_RPC_PEERS`, so without the self-call guard the macro-emitted router's `try_client` returned the HttpClient and the peer looped back to itself over HTTP.
+- [x] **Python** ([_proxy.py](../rpc/python/src/caravan_rpc/_proxy.py)) — `_ClientProxy.__init__` applies the same self-call guard via `CARAVAN_RPC_ROLE`.
+- [x] **Python** ([_codec.py](../rpc/python/src/caravan_rpc/_codec.py)) — `TypeAdapter` instances now built with `ConfigDict(ser_json_bytes="base64", val_json_bytes="base64")` via a `_build_adapter` helper that falls back to the no-config form on BaseModel/dataclass/TypedDict types (pydantic disallows passing config there). Fixes UTF-8 decode errors when binary payloads (PDFs, images) cross the wire — invoice-parse OCRText / OCRLayout couldn't dispatch HTTP before this.
+- [x] **Python + Rust auto-register** — `_register_blob_store` branches on `CARAVAN_BLOB_BACKEND`: `s3` requires `S3_BUCKET` (loud-fails otherwise), `local-fs` uses LocalFs (skipping MinIO even when `S3_ENDPOINT_URL` is set), unset → consult yaml_fallback (non-caravan local dev).
+- [x] Version bumped to `0.1.1` in [Cargo.toml](../rpc/rust/caravan-rpc/Cargo.toml), [caravan-rpc-macros/Cargo.toml](../rpc/rust/caravan-rpc-macros/Cargo.toml), [pyproject.toml](../rpc/python/pyproject.toml). Manifest patcher ([emit/manifest.go](../internal/compiler/emit/manifest.go)) updated to inject `caravan-rpc>=0.1.1`.
+
+User-repo changes (all on respective `caravan-conversion` / `caravan-cloud` branches):
+- [x] **code-rag**: new `prod-monolith` target (Fargate, all 5 seams inproc); new `prod-mixed` target preserved. `[patch.crates-io]` added to `Cargo.toml` for local 0.1.1 iteration (will be removed after crates.io 0.1.1 publish).
+- [x] **invoice-parse**: new `prod-monolith` target (Fargate, 3 entries, all 4 seams inproc, cloud-managed S3+RDS+SQS); `prod-mixed` preserved. `processing` entry now declares `runtime_target: processing` + `env_file: ../.env` (peers inherit). `invoice_db.password` aligned to base compose ("invoice"). New `additional_contexts: caravan-rpc-src` on `ingest` + `output` compose services bringing caravan/rpc/rust/ into the docker build context. `processing` and `model-init` services pin `target: processing` (the Dockerfile's `lambda-slim` is the default last stage after M7, otherwise base-compose builds would silently switch to it). Vendored `caravan_rpc-0.1.1-py3-none-any.whl` in `services/processing/vendor/` (local-test only; reverts to PyPI install after 0.1.1 publish).
+
+Acceptance status (Phase-1 backtest after Phase 2 emit changes — "backtesting containers"):
+- [x] **code-rag/dev-monolith**: `caravan up --target=dev-monolith` → curl POST /chat → 11 sources, intent=relationship. Single chat container, no peers.
+- [x] **code-rag/dev-split-light**: `caravan up --target=dev-split-light` → curl POST /chat → 11 sources, intent=relationship, chunk_ids **byte-identical** to dev-monolith. Stopping the embedder peer (`docker stop`) → chat panics with `caravan-rpc: dispatch_sync_by_peer: Transport(Http("error sending request for url (http://embedder:8080/_caravan/rpc/Embedder/embed_one)"))` — proves HTTP dispatch is real (not silent inproc fallback).
+- [x] **invoice-parse/dev-bootstrap**: `caravan up --target=dev-bootstrap` → enqueue sample_invoice.pdf → job `170166ef-...` → `delivered`, vendor=`myAgency Ltd`, currency=`CZK`, 7 line items, confidence 1.0. All three Python seam peers (`ocr-text`, `ocr-layout`, `llm-extractor`) served 200 responses for `/_caravan/rpc/...`. Matches B0 baseline.
+
+Acceptance status (cloud HCL emit — all 6 cloud targets compile cleanly post-fixes):
+- [x] code-rag: `prod-monolith`, `staging-fargate`, `prod-mixed` — `caravan compile --target=<X>` succeeds; HCL eyeball-review clean.
+- [x] invoice-parse: `prod-monolith`, `prod-mixed`, `hybrid-dev` — `caravan compile --target=<X>` succeeds; emitted main.tf uses `aws_security_group.caravan_resources`, raw HCL refs in task-def env, `publicly_accessible = false` on RDS.
+- [x] `go test ./...` green across all packages; `cargo test --workspace` green (50+ tests); `pytest tests/` green (70 tests).
+
+Cloud apply attempted on invoice-parse/prod-mixed (2026-05-27, ap-southeast-1, account 351090596944) — surfaced four real-AWS gaps; each fixed in caravan emit + caravan up; teardown clean.
+
+Cloud-apply landings (2026-05-27):
+- [x] `caravan up` Fargate path: build delegated to `docker compose -f <base> build <entry>` so the user's hand-authored compose (build context + Dockerfile + additional_contexts) is the single source of truth — caravan no longer re-encodes build config. Local image `<project>-<entry>:latest` is re-tagged to the ECR URL for push.
+- [x] Lambda build via caravan-emitted `docker-compose.fargate-build.generated.yaml`: one build-only service per Lambda seam, inheriting host entry's context + additional_contexts from base compose, overriding `target:` to the slim stage + `args.CARAVAN_TARGET`. caravan up runs `docker compose -f <base> -f <fargate-build> build <seam>-lambda` then tags + pushes to `<host-repo>:lambda-<seam>`.
+- [x] `BUILDX_NO_DEFAULT_ATTESTATIONS=1` threaded through caravan up's subprocess env. Lambda rejects images carrying buildx provenance/sbom attestation manifests ("media type is not supported"); without this Fargate images succeed but Lambda CreateFunction 400s.
+- [x] CloudWatch log groups pre-created via `aws_cloudwatch_log_group` per Fargate consumer ([compute_fargate.go:54+](../internal/compiler/emit/hcl/compute_fargate.go)). `AmazonECSTaskExecutionRolePolicy` grants `CreateLogStream` + `PutLogEvents` but NOT `CreateLogGroup`, so awslogs-driver's `awslogs-create-group=true` would 403 at task-start. Dropped from emit; log groups exist via HCL.
+- [x] Secrets-as-tofu-variables for `from: env` declarations: `caravan compile` emits `variable "<secret>" { type = string, sensitive = true, description = "env:<HOST_VAR>" }` per host env var the entry references. `caravan up` parses descriptions, looks each up in `os.environ` (+ loads `.env` if present), passes via `TF_VAR_<secret>` to tofu. Loud-fails with a clear message listing unset host env vars. GEMINI_API_KEY end-to-end verified.
+- [x] `caravan up` defaults to `tofu apply -auto-approve` / `tofu destroy -auto-approve` — `caravan up` itself is the user-consent point; tofu's stdin prompt deadlocks in a non-TTY subprocess. HCL on-disk is the reviewable artifact (eyeball before `caravan up`).
+- [x] **End-to-end against real AWS verified through:** ECR push (3 entry images + 1 lambda image) → tofu init+apply (43 resources up clean) → Fargate task RUNNING → SQS message dispatched → processing.py reaches the OCRText seam dispatch. Teardown via `caravan down --target=prod-mixed` clean (43 destroyed).
+
+M9-cloud closure landings (2026-05-27, evening session):
+
+- [x] **env_file / `environment:` block passthrough → Fargate + Lambda env, candidate (b).** Caravan now scans each container-mode entry's same-named base-compose service for `env_file:` paths and `environment:` block at compile time. Keys split three ways:
+  - `env_file:` keys (or `environment:` `${VAR}` interpolations) → one tofu `variable {}` block per key (sensitive=false), task-def env references `var.<KEY>`; `caravan up` resolves from host env (loadDotEnv reads `.env`).
+  - `environment:` literal values → inlined as task-def env literals (no TF variable).
+  - Caravan-owned keys (`CARAVAN_*`, resource endpoint names from `rp.ResourceEnvVars`, declared secret env names) → skipped; their existing pipelines stay authoritative.
+
+  Zero caravan.yaml schema delta — the user's `env_file:`/`environment:` declarations in their base compose are the single source of truth. Code at [internal/compiler/emit/hcl/bindings.go](../internal/compiler/emit/hcl/bindings.go) (`ComputeBindings`); base scanner extended at [internal/compiler/emit/base_compose_scan.go](../internal/compiler/emit/base_compose_scan.go) (`BaseComposeServiceEnvs`, `LoadDotEnvFile`).
+
+- [x] **Sidecar wiring manifest** (`caravan.tfwiring.json`) — caravan compile emits this alongside main.tf listing every TF variable binding (secret + env_file + environment-interpolation) as `{var_name, env_name, sensitive, source}`. `caravan up` reads this JSON to populate `TF_VAR_*` from host env. Replaces the M9-pre `tofuSecretVars` HCL string-grep — the wiring source of truth is now a structured artifact, not textual HCL convention.
+
+- [x] **Deterministic seam → host-entry mapping fix** ([compute_fargate.go::fargateSeamHostEntry](../internal/compiler/emit/hcl/compute_fargate.go)). Prior code grabbed an arbitrary key from `rp.ResourceEnvVars` via Go's randomized map iteration — accidental-correct for single-entry repos but broken on multi-entry plans. Now mirrors `pickSeamHostEntry` (path-match first, alphabetically-first container entry fallback).
+
+- [x] **`emit.AppProfile` constant** — `"app"` lifted from inline string literals in [compose.go](../internal/compiler/emit/compose.go) / [resources.go](../internal/compiler/emit/resources.go) into an exported package-level const. `cmd/caravan/up.go::buildComposeArgs` references it directly (was hardcoded duplicated literal). Single source of truth across producer + consumer.
+
+- [x] **invoice-parse/prod-mixed** (deferred test #1, re-verified 2026-05-27): `caravan up` → 43 resources up clean, Fargate processing task RUNNING with PaddleOCR loading PP-OCRv5_mobile_det/en_PP-OCRv5_mobile_rec from `var.<KEY>` task-def env, Lambda (ValidateExtraction) function URL deployed, `caravan down` clean (43 destroyed).
+
+- [x] **invoice-parse/prod-monolith** (deferred test #2, first real apply): 3 Fargate tasks (processing + ingest + output), all 4 seams inproc, RDS+S3+SQS via cloud-managed. 39 resources up clean → processing task RUNNING → 39 destroyed.
+
+- [x] **code-rag/prod-monolith** (deferred test #2, second repo): 1 Fargate task (code-rag-chat), all 5 seams inproc. 22 resources up clean → task RUNNING → 22 destroyed. Confirms thesis on Rust stack.
+
+- [x] **code-rag/staging-fargate** (regression re-verify): 24 → 26 resources (re-compile picked up per-consumer log group emit that the prior HCL was missing), both chat + embedder tasks RUNNING, embedder reached via Cloud Map private DNS (`http://embedder.code-rag.local:8080`), `caravan down` clean.
+
+Post-merge sequencing:
+- [ ] Ship caravan-rpc 0.1.1 to PyPI + crates.io (cargo publish for `caravan-rpc-macros` first, then `caravan-rpc`; `twine upload` for the Python wheel). User-publishes immediately after the Caravan merge to main lands.
+- [ ] Dep-swap on the user repos: remove `[patch.crates-io]` from code-rag's `Cargo.toml`; in invoice-parse's `services/processing/Dockerfile`, drop the `--find-links /app/vendor` line and pin `caravan-rpc>=0.1.1` directly. Then re-run `dev-bootstrap` and `dev-monolith` to confirm the published artifacts behave identically to the local-path versions Phase 2 ran against.
+
+**Scope pivot (user direction, 2026-05-27): drop the cloud + local "hybrid-dev" cell from M9-cloud closure scope.** The remaining cloud test matrix is just two cells: cloud-micro (prod-mixed shape — Fargate + Lambda + cloud-managed) and cloud-monolith (Fargate, all seams inproc per pre-seam entry). hybrid-dev (compose runtime + creds_passthrough to real AWS resources) stays implementable and the HCL emit verifies clean, but real-apply hybrid is no longer a closure requirement. Updates the dev plan's "all 8 conditions across compose × Fargate × Lambda" framing to "cloud-micro + cloud-monolith only" for the M9-cloud gate.
+
+**M9-cloud gate status (2026-05-27 evening): ✅ CLOSED.** Both cloud-micro and cloud-monolith cells green on both repos. Phase 2 (Caravan AWS coverage) empirically proven end-to-end. The 0.1.1 publish + dep-swap on the user repos sequences immediately after the Caravan merge to main.
+
+Open issues surfaced but not blocking the M9-cloud gate:
+- ⏸️ MinIO is "emitted but skipped" for oss-local buckets — no invoice-parse service actually uses MinIO; LocalFs is selected via `CARAVAN_BLOB_BACKEND=local-fs`. To drive MinIO end-to-end, add `S3_BUCKET` to `ossLocalEndpoints` in [resource_endpoints.go](../internal/compiler/resource_endpoints.go) and remove the `MinIO container present but unused` line from the README. Tracked here; not in current scope.
+- ⏸️ ECR repo naming convention: caravan currently emits `data "aws_ecr_repository" { name = <toDashed(entry.Name)> }` — just the entry name. The M4-cloud-prereq checklist asks the user to pre-create repos as `<app>-<entry>` (e.g. `invoice-parse-processing`). For multi-entry repos the names mismatch; user has to either rename existing repos to match caravan's convention or caravan emit needs to use `<app>-<entry>`. The 2026-05-27 cloud run worked around this by creating extra `processing`/`ingest`/`output` repos alongside the prefixed ones. Decide convention + align both ends.
+- ⏸️ tofu `-auto-approve` default: now the implicit `caravan up` behavior. A `--review-only` flag (runs `tofu plan` + exits before apply) would let users gate the apply for review-heavy environments without bypassing caravan up entirely. Small UX add when needed.
 
 ---
 
@@ -805,18 +1043,20 @@ Cloud milestones land after Phase 1 is fully validated. Strongly descope-able as
 
                   ════════════════ Phase 2 — AWS ═════════════════
 
-                              M4-cloud (HCL emit + AWS resources)
+                       M4-cloud-prereq (AWS account bootstrap)
                                        ↓
-                              M7 (Lambda dispatch)
+                       M4-cloud (HCL emit, hybrid only — local compute + real AWS resources)
                                        ↓
-                              M8 (Batch — strong descope candidate)
+                              M4b (first Fargate placement)
                                        ↓
-                          M9-cloud (8 conditions across AWS)
+                       M7 (Lambda dispatch on TWO seams: Rust intent + Python validate)
+                                       ↓
+                       M9-cloud (8 conditions × 2 repos × compose+Fargate+Lambda)
 ```
 
 **Phase 1 critical path:** B0 → M0 → M1 → M2 → M5 → M9 (or via M6). Phase 1 alone proves the thesis.
 
-**Phase 2 critical path:** M9 (gate) → M4-cloud → M7 → M9-cloud.
+**Phase 2 critical path:** M9 (gate) → M4-cloud-prereq → M4-cloud → M4b → M7 → M9-cloud. (M8 dropped per descope ladder #2.)
 
 **Parallelizable pairs:** B0 ∥ B0p (different repo + language; only milestone explicitly parallel). M3 ∥ M4. M5 ∥ M6.
 
@@ -832,11 +1072,12 @@ Approximately 30 focused sessions split across two phases.
 - Sessions 14–20: **M3 → M6**. Resource composition (compose-only), both repos fully Caravan-ified.
 - Sessions 21–22: **M9**. Phase 1 closes — 8 conditions green on both repos via compose.
 
-**Phase 2 — AWS (~10 sessions, optional):**
-- Sessions 23–26: **M4-cloud**. HCL emitter + AWS resource emitters.
-- Sessions 27–30: **M7**. Lambda dispatch on one seam.
-- Sessions 31–32: **M8**. Batch placement (strong descope candidate; can skip entirely).
-- Sessions 33–34: **M9-cloud**. Phase 2 close — same 8 conditions across AWS targets.
+**Phase 2 — AWS (~13–14 sessions, optional):**
+- Session 23: **M4-cloud-prereq**. AWS account bootstrap (no caravan code; doc + ops).
+- Sessions 24–26: **M4-cloud (hybrid only)**. HCL emitter + resource emitters; local compute talks to real AWS.
+- Sessions 27–30: **M4b**. First Fargate placement (VPC, ECR push, Cloud Map).
+- Sessions 31–34: **M7**. Lambda dispatch on two seams (Rust IntentClassifier + Python ValidateExtraction); SigV4 in both SDKs.
+- Sessions 35–36: **M9-cloud**. Phase 2 close — 8 conditions across compose × Fargate × Lambda for both repos.
 
 **If the project ends at session 22 (Phase 1 done), the thesis is empirically proven** on real code via compose. Phase 2 is AWS coverage, not thesis proof. If it ends at session 5 (B0 done), the thesis is hand-proven on one real seam — already meaningful evidence.
 
@@ -844,11 +1085,12 @@ Approximately 30 focused sessions split across two phases.
 
 ## Descope ladder (drop first first)
 
-1. **All of Phase 2 (M4-cloud, M7, M8, M9-cloud)**. Phase 1 alone proves the thesis on real code. Skip Phase 2 if compose-only validation suffices for your audience (PoC review, design doc, portfolio).
-2. **M8 (Batch)** if Phase 2 is happening. Heaviest emitter for thinnest demo.
+1. **All of Phase 2 (M4-cloud-prereq, M4-cloud, M4b, M7, M9-cloud)**. Phase 1 alone proves the thesis on real code. Skip Phase 2 if compose-only validation suffices for your audience (PoC review, design doc, portfolio).
+2. **M8 (Batch)** — already dropped from Phase 2 scope. Code-raptor can run as a one-off `docker run` against real S3 if needed.
 3. **M6 third seam (OCRLayout)**. Keep LLMExtraction (B0) + OCRText only.
-4. **Lambda mode in M7**. Fargate only if heavy ML seams won't tolerate cold-start.
-5. **Tier-1 manifest patching** (LLM provider feature flags) — hardcode `rig-core`'s `bedrock` feature for PoC.
+4. **M7 Python leg (ValidateExtraction)**. Rust IntentClassifier alone if Python Lambda image-flavor work runs long.
+5. **M7 entirely** — Fargate only if heavy ML seams won't tolerate cold-start. Drops the Lambda dispatch demo but keeps Fargate × hybrid-resources coverage.
+6. **Tier-1 manifest patching** (LLM provider feature flags) — hardcode `rig-core`'s `bedrock` feature for PoC.
 
 **Cannot descope:** B0 (the lived spec proof). M2 (Rust SDK + thesis flip in a second language). At least one of M5/M6 (real codebase validates SDK). At least one of M3/M4 (orthogonality of language or composition). M9 Phase 1 close (otherwise nothing is verified).
 
@@ -865,8 +1107,13 @@ From [open_decisions.md](open_decisions.md). Each must be ratified before its mi
 | M2 | Rust SDK HTTP server | axum |
 | M2 | Shared-secret strategy (D7) | Compiler-emitted hex (option A) |
 | M4 | Manifest-patch conflict policy (D9) | Error on version mismatch |
-| M7 | `caravan up` workflow (D10) | Wrap `tofu apply -auto-approve` |
-| M7 | Fargate-Fargate RPC mechanism (D11) | Cloud Map (cheaper than ALB) |
+| M4-cloud-prereq | AWS region pin (state backend + ECR + resources) | `ap-southeast-1` (Singapore) — Bangkok-operator latency optimum; verify Bedrock model catalog before pin. User choice, ratified in checklist. |
+| M4-cloud | Terraform state backend strategy | User-precreated S3+DynamoDB (doc-only one-shot; chicken-and-egg-bootstrapped) |
+| M4-cloud | Storage permanence vocabulary | Already in IR — `composition: by-id` (pre-created) + `composition: cloud-managed` (HCL-emitted) |
+| M4b | `caravan up` workflow (D10) — **resolved 2026-05-26, revised same day** | **Caravan owns tofu invocation**: `caravan up` runs ECR push + `tofu init` + `tofu apply` (interactive — tofu prompts for confirmation). `caravan down` runs `tofu destroy`. User never types a tofu command. HCL on disk is reviewable / hand-editable between `caravan compile` and `caravan up`. |
+| M4b | Fargate-Fargate RPC mechanism (D11) — **resolved 2026-05-26** | **Cloud Map** (cheaper than ALB; fits `CARAVAN_RPC_PEERS` dispatch; obvious fit for multi-container demo). |
+| M7 | Auth split lambda vs http (D7 extension) | SigV4-only for `mode: lambda`; bearer for `mode: http`; emitter omits `CARAVAN_RPC_SHARED_SECRET` from Lambda env |
+| M7 | Slim image flavor for Python Lambda | `slim` Dockerfile build-target convention (no yaml schema growth) |
 
 ---
 
@@ -881,8 +1128,10 @@ From [poc_yaml_spec.md](poc_yaml_spec.md) §Testability.
 - **All 8 on both repos across mixed per-seam-mode combinations via compose: M9 (Phase 1 close).**
 
 **Phase 2 (AWS) extension:**
-- Conditions 5, 6 re-validated against AWS (Lambda + Fargate) targets at M9-cloud.
-- **All 8 across compose × AWS per-seam-mode combinations: M9-cloud (Phase 2 close).**
+- Conditions 5, 6 re-validated against AWS resource layer at M4-cloud (hybrid: local compute → real S3/RDS/SQS).
+- Conditions 5, 6 re-validated against Fargate at M4b.
+- Conditions 5, 6 re-validated against Lambda (both Rust IntentClassifier and Python ValidateExtraction) at M7.
+- **All 8 across compose × Fargate × Lambda per-seam-mode combinations: M9-cloud (Phase 2 close).**
 
 ---
 
@@ -899,10 +1148,11 @@ From [poc_yaml_spec.md](poc_yaml_spec.md) §Testability.
 - **M9 (Phase 1 close)**: CI matrix green on compose for both repos. No AWS yet.
 
 **Phase 2:**
-- **M4-cloud**: `aws s3 ls` shows real bucket written to by the same code that wrote to MinIO at M4. `tofu plan` reviewable.
-- **M7**: CloudWatch logs from Lambda show dispatch lines.
-- **M8**: AWS Batch job ingests one repo and writes embeddings to S3 successfully.
-- **M9-cloud (Phase 2 close)**: CI matrix green on compose AND AWS for both repos.
+- **M4-cloud-prereq**: `aws sts get-caller-identity --profile caravan-poc` returns the IAM user ARN; `tofu init` against the new state backend completes; AWS Budgets shows the spending cap.
+- **M4-cloud**: `caravan compile --target=hybrid-dev` writes reviewable HCL; `tofu apply` provisions S3+RDS+SQS+cache; invoice-parse compose run writes a real invoice to real S3 and reads from RDS.
+- **M4b** (against code-rag): `caravan up --target=staging-fargate` succeeds end-to-end through ECR push, then prints the `tofu apply` command (D10); after user runs it, `aws ecs describe-tasks` shows **two Fargate tasks RUNNING** (code-rag-chat + Embedder peer); chat-to-Embedder RPC resolves via Cloud Map DNS (D11); same `chunk_ids` returned as `dev-split-light` (byte-identical, proves yaml-flip semantics carry); `git diff -- code-rag/crates/ code-rag/src/` empty between dev-split-light and staging-fargate; non-Fargate surfaces still build (`cargo build -p code-rag-mcp`, `trunk build --features standalone`, code-raptor ingest); `ComputeEmitter` interface has the `LambdaExecutionRole` placeholder ready for M7.
+- **M7**: code-rag `/chat` against `prod-mixed` returns byte-identical chunk_ids to `dev-monolith`; invoice-parse PDF job processed through Fargate-→Lambda-→Fargate producing the expected Excel; CloudWatch shows IntentClassifier (Rust) and ValidateExtraction (Python) Lambda invocations.
+- **M9-cloud (Phase 2 close)**: 8 conditions × 2 repos × (compose + Fargate + Lambda) matrix all green. AWS Budgets check passes; `tofu destroy` sweeps per-target resources at run end; state backend persists. **Status (2026-05-26)**: Phase-1 compose regression verified byte-identical on both repos (code-rag dev-split-light chunk_ids = dev-monolith baseline; invoice-parse dev-bootstrap PDF → delivered, vendor=myAgency Ltd, 7 line items = B0 baseline) with real HTTP dispatch on 1 Rust seam (Embedder) + 3 Python seams (LLMExtraction, OCRText, OCRLayout). Cloud HCL emit fixed for the Fargate × cloud-managed cross-product (laptop-IP SG → `caravan_resources` SG with private subnet groups; raw HCL refs in task-def env). Real AWS `caravan up --target=prod-mixed` / `prod-monolith` apply deferred to next session.
 
 ---
 

@@ -16,8 +16,8 @@ type Span struct {
 // model into entries (top-level deploy units) + seams (synchronous
 // abstraction boundaries) + per-target dispatch overrides.
 type Plan struct {
-	Name          string               `json:"name"`
-	DefaultTarget string               `json:"default_target,omitempty"`
+	Name          string `json:"name"`
+	DefaultTarget string `json:"default_target,omitempty"`
 	// OutputDir is the per-target write root. `caravan compile
 	// --target=<t>` writes its artifacts under <OutputDir>/<t>/generated/.
 	// Yaml field: `output_dir`. Defaults at phase 3 (Normalize) to
@@ -25,12 +25,12 @@ type Plan struct {
 	// collide with a hand-authored `infra/` the user already owns.
 	// Existing repos that want to keep the previous layout set
 	// `output_dir: infra` explicitly.
-	OutputDir     string               `json:"output_dir,omitempty"`
-	Entries       map[string]*Entry    `json:"entries,omitempty"`
-	Seams         map[string]*Seam     `json:"seams,omitempty"`
-	Resources     map[string]*Resource `json:"resources,omitempty"`
-	Secrets       map[string]*Secret   `json:"secrets,omitempty"`
-	Targets       map[string]*Target   `json:"targets,omitempty"`
+	OutputDir string               `json:"output_dir,omitempty"`
+	Entries   map[string]*Entry    `json:"entries,omitempty"`
+	Seams     map[string]*Seam     `json:"seams,omitempty"`
+	Resources map[string]*Resource `json:"resources,omitempty"`
+	Secrets   map[string]*Secret   `json:"secrets,omitempty"`
+	Targets   map[string]*Target   `json:"targets,omitempty"`
 	// PatchedManifests lists per-target build-context manifest files
 	// (e.g. requirements.txt) written by phase-5 emit/manifest.go. Empty
 	// until EmitManifestPatches runs. Surfaced so the CLI can log what
@@ -82,7 +82,7 @@ type Seam struct {
 	// Dockerfile is the image the peer service uses when this seam
 	// dispatches as a container. Often the same as the consuming
 	// entry's Dockerfile (the image already carries the impl code).
-	Dockerfile string `json:"dockerfile,omitempty"`
+	Dockerfile string   `json:"dockerfile,omitempty"`
 	Uses       []string `json:"uses,omitempty"`
 	// Impl is the impl-class reference the M1 compose-emitter passes
 	// to the peer service's serve command. Python shape: "module:Class".
@@ -100,18 +100,26 @@ type Seam struct {
 	// `../.env` so the peer inherits GEMINI_API_KEY; code-rag's
 	// Embedder leaves it unset (no envvar deps).
 	EnvFile string `json:"env_file,omitempty"`
-	Span    Span   `json:"-"`
+	// ImageTarget names the multi-stage Dockerfile stage to use for
+	// this seam's Lambda peer image (M7). Optional; only consulted
+	// when at least one target dispatches the seam as `lambda`. Lets
+	// the user opt into a slim runtime stage (excluding heavy deps
+	// not needed by the seam impl) to meet sub-2s Lambda cold-start.
+	// Parallel to Entry.RuntimeTarget. Empty falls back to the host
+	// entry's runtime_target (or the Dockerfile's default stage).
+	ImageTarget string `json:"image_target,omitempty"`
+	Span        Span   `json:"-"`
 }
 
 // Trigger is the shape that drives an entry's lifecycle. PoC supports
 // http (long-running HTTP server), queue (consumer loop), cron, stream.
 type Trigger struct {
-	Kind   TriggerKind   `json:"kind"`
-	HTTP   *HTTPTrigger  `json:"http,omitempty"`
-	Queue  *QueueTrigger `json:"queue,omitempty"`
-	Cron   *CronTrigger  `json:"cron,omitempty"`
+	Kind   TriggerKind    `json:"kind"`
+	HTTP   *HTTPTrigger   `json:"http,omitempty"`
+	Queue  *QueueTrigger  `json:"queue,omitempty"`
+	Cron   *CronTrigger   `json:"cron,omitempty"`
 	Stream *StreamTrigger `json:"stream,omitempty"`
-	Span   Span          `json:"-"`
+	Span   Span           `json:"-"`
 }
 
 // HTTPTrigger declares an http endpoint on the entry.
@@ -187,7 +195,89 @@ type Target struct {
 	// CompositionOverride. Empty fields fall through to the resource's
 	// own declaration / target default / variant default at resolve.
 	Composition map[string]*CompositionOverride `json:"composition,omitempty"`
-	Span        Span                            `json:"-"`
+	// CredsPassthrough enables M4-cloud's hybrid-dev mode: when true the
+	// compose emitter mounts the developer's `~/.aws` into each
+	// app-profile service and injects AWS_REGION/AWS_PROFILE; the HCL
+	// emitter writes Terraform for cloud-managed resources alongside the
+	// compose override. Yaml field: `creds_passthrough:`. False outside
+	// M4-cloud targets.
+	CredsPassthrough bool `json:"creds_passthrough,omitempty"`
+	// AwsProfile names the local AWS profile the compose containers
+	// authenticate with via the mounted ~/.aws. Yaml field:
+	// `aws_profile:`. Defaults at phase 3 to "caravan-poc" per the
+	// M4-cloud-prereq onboarding checklist when CredsPassthrough is set.
+	AwsProfile string `json:"aws_profile,omitempty"`
+	// Backend pins the Terraform state backend names for HCL emit. The
+	// values live in caravan.yaml (not env vars or env-time discovery)
+	// so the IR stays self-contained. Required when CredsPassthrough is
+	// set; the M4-cloud-prereq onboarding checklist provides the values
+	// (state bucket + DynamoDB lock table).
+	Backend *BackendConfig `json:"backend,omitempty"`
+	// VPC carries the network shape M4b Fargate targets emit (VPC + 2-AZ
+	// subnets + IGW + single/HA NAT). Required for `runtime: fargate`.
+	// Nil on docker-compose targets (no network emission).
+	VPC *VPCConfig `json:"vpc,omitempty"`
+	// CloudMapNamespace is the private DNS namespace registered for
+	// Fargate-Fargate service discovery (D11 → Cloud Map). Defaults to
+	// "<app>.local" at phase 3 when empty on a Fargate target. Ignored
+	// on non-Fargate targets.
+	CloudMapNamespace string `json:"cloud_map_namespace,omitempty"`
+	// ECSClusterName overrides the default ECS cluster name on a Fargate
+	// target. Defaults at phase 3 to "<app>-<target>" when empty.
+	ECSClusterName string `json:"ecs_cluster_name,omitempty"`
+	Span           Span   `json:"-"`
+}
+
+// EmitsHCL reports whether this target produces HCL output. True for
+// any AWS-producing target: hybrid-dev (M4-cloud — compose containers
+// authenticate via creds_passthrough), Fargate (M4b — ECS task
+// placement), and Lambda (M7 — function placement). Stays false for
+// pure docker-compose targets (no AWS shape at all).
+//
+// The signal is Backend != nil: every AWS-producing target requires a
+// remote tofu state backend (validators enforce this upstream), and no
+// pure-compose target carries one. Adding a new placement runtime means
+// adding a validator that requires Backend — the EmitsHCL predicate
+// itself stays unchanged.
+func (t *Target) EmitsHCL() bool {
+	if t == nil {
+		return false
+	}
+	return t.Backend != nil
+}
+
+// VPCConfig pins the VPC shape M4b emits for a Fargate target. Single
+// NAT is the v1 default; HA NAT (one per AZ) is flagged for v1.1 via
+// `nat: ha`.
+type VPCConfig struct {
+	// CIDR is the VPC's IPv4 CIDR block. Defaults at phase 3 to
+	// "10.0.0.0/16" when empty.
+	CIDR string `json:"cidr,omitempty"`
+	// NAT controls NAT gateway redundancy: "single" (one NAT, one AZ
+	// public subnet) or "ha" (one per AZ). Defaults at phase 3 to
+	// "single" — sufficient for staging targets; prod should set "ha".
+	NAT  string `json:"nat,omitempty"`
+	Span Span   `json:"-"`
+}
+
+// BackendConfig pins the S3+DynamoDB Terraform state backend for one
+// cloud target. Used by HCL emit's backend.tf. The bucket and lock
+// table are created out-of-band in M4-cloud-prereq; caravan reads
+// these names from the user's caravan.yaml.
+type BackendConfig struct {
+	// Bucket is the S3 bucket holding the .tfstate file.
+	Bucket string `json:"bucket"`
+	// LockTable is the DynamoDB table backing tofu's state lock.
+	LockTable string `json:"lock_table"`
+	// Region is the AWS region the bucket + lock table live in. May
+	// differ from the target's Region (state can live in one region
+	// while resources land in another). Defaults to Target.Region at
+	// emit time when empty.
+	Region string `json:"region,omitempty"`
+	// Key is the per-target state-file path inside the bucket. Defaults
+	// to "<app>/<target>.tfstate" at phase 3 when empty.
+	Key  string `json:"key,omitempty"`
+	Span Span   `json:"-"`
 }
 
 // CompositionOverride is one target's per-resource override. Either
@@ -205,8 +295,8 @@ type CompositionOverride struct {
 // env vars (DATABASE_URL, REDIS_URL, etc.). IAM, networking, and
 // secret resolution stay deferred (M4-cloud / M7).
 type ResolvedPlan struct {
-	Plan       *Plan                        `json:"plan"`
-	TargetName string                       `json:"target"`
+	Plan       *Plan  `json:"plan"`
+	TargetName string `json:"target"`
 	// EnvVars carries the SDK-control-plane env vars per deploy unit
 	// (CARAVAN_RPC_PEERS, etc.). Source = seam dispatch.
 	EnvVars map[string]map[string]string `json:"env_vars"`
@@ -232,6 +322,28 @@ type ResolvedPlan struct {
 	// (post-M3 refactor) tags these with SourceResource so they merge
 	// deterministically with SourceSeam (CARAVAN_RPC_*) keys.
 	ResourceEnvVars map[string]map[string]string `json:"resource_env_vars,omitempty"`
+	// IAMGrants carries the per-entry IAM permission set the HCL emitter
+	// needs (M4-cloud). Keyed by entry name → list of statements;
+	// statements are deduped + sorted within an entry. Populated only
+	// for entries that consume cloud-managed resources; nil otherwise.
+	IAMGrants map[string][]IAMStatement `json:"iam_grants,omitempty"`
+}
+
+// IAMStatement is one resource-action grant tied to a specific resolved
+// resource. ResourceRef is the resource name from the Plan IR (not the
+// cloud-side ARN — HCL emit derives the ARN from the resource block via
+// `aws_s3_bucket.X.arn` references). Actions are sorted so byte-stable
+// HCL output is trivial.
+type IAMStatement struct {
+	// ResourceRef names the resource (Plan IR key) this grant applies to.
+	ResourceRef string `json:"resource_ref"`
+	// ResourceKind is the resolved resource's type (bucket / queue /
+	// search / etc.). Carried alongside ResourceRef so HCL emit can
+	// pick the right ARN expression without re-looking-up the resource.
+	ResourceKind ResourceKind `json:"resource_kind"`
+	// Actions is the sorted, deduped list of AWS API actions granted
+	// (e.g. ["s3:GetObject", "s3:PutObject"]).
+	Actions []string `json:"actions"`
 }
 
 // ResolvedResource is one resource's per-target resolved shape. Carries

@@ -1,6 +1,6 @@
 [package]
 name = "caravan-rpc"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Rachapong Chirarattananon"]
@@ -25,14 +25,26 @@ path = "src/lib.rs"
 [features]
 default = ["client", "server"]
 # `client` enables the HTTP client dispatch path used by macro-generated
-# client adapters (reqwest blocking + async).
-client = ["dep:reqwest"]
+# client adapters (reqwest blocking + async). Also pulls in the SigV4
+# signer used by Lambda Function URL dispatch (M7); aws-config is reused
+# from the resources-aws feature set when present, otherwise pulled in
+# here directly for credential resolution.
+client = ["dep:reqwest", "dep:aws-sigv4", "dep:aws-credential-types", "dep:aws-config", "dep:http", "dep:tokio"]
 # `server` enables the axum-based peer HTTP server used by macro-generated
-# server adapters and the compiler-emitted synthetic peer crate.
-server = ["dep:axum", "dep:tokio"]
+# server adapters and the compiler-emitted synthetic peer crate. Also
+# pulls in the Lambda runtime adapter (`lambda_http`) so the same axum
+# router can be served by a Lambda peer when AWS_LAMBDA_RUNTIME_API is set.
+server = ["dep:axum", "dep:tokio", "dep:lambda_http"]
+# Resource-adapter feature gates. The seam traits (BlobStore, MessageQueue)
+# always compile; concrete impls are gated so users who only need LocalFs
+# don't pull in aws-sdk / redis / lapin.
+resources-aws = ["dep:aws-config", "dep:aws-sdk-s3", "dep:aws-sdk-sqs", "dep:tokio", "dep:uuid", "dep:url"]
+resources-redis = ["dep:redis", "dep:tokio", "dep:uuid"]
+resources-rabbit = ["dep:lapin", "dep:tokio", "dep:uuid", "dep:url"]
+resources-all = ["resources-aws", "resources-redis", "resources-rabbit"]
 
 [dependencies]
-caravan-rpc-macros = { version = "=0.1.0", path = "../caravan-rpc-macros" }
+caravan-rpc-macros = { version = "=0.1.1", path = "../caravan-rpc-macros" }
 
 # Codec + peer-table parsing — always on (no HTTP cost, used by inproc paths
 # for diagnostics and forward-compat peer-table inspection).
@@ -57,12 +69,38 @@ async-trait = "0.1"
 # the proc-macro picks per trait method shape at M2 Session 3+.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"], optional = true }
 
+# Lambda client dispatch (M7). SigV4 signing for Function URL POSTs. Gated
+# via the `client` feature alongside reqwest; WASM consumers
+# (`default-features = false`) skip this whole branch.
+aws-sigv4 = { version = "1", optional = true }
+aws-credential-types = { version = "1", optional = true }
+http = { version = "1", optional = true }
+
 # Server-side HTTP (gated by `server` feature). axum 0.8 matches code-rag's
 # pinned axum so the synthetic peer crate can share a workspace tokio.
 axum = { version = "0.8", optional = true }
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "net", "signal"], optional = true }
 
+# Lambda server adapter (M7). Wraps an axum Router into a Lambda handler so
+# the same router code that serves HTTP peers also serves Lambda peers.
+# Gated via `server`.
+lambda_http = { version = "0.13", optional = true }
+
+# Resource-adapter optional deps. Pulled in transitively when a user
+# enables `resources-aws`, `resources-redis`, or `resources-rabbit`.
+aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
+aws-sdk-s3 = { version = "1", optional = true }
+aws-sdk-sqs = { version = "1", optional = true }
+redis = { version = "1.0", features = ["tokio-comp", "streams"], optional = true }
+lapin = { version = "2", optional = true }
+url = { version = "2", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+# YAML parsing for the optional yaml_fallback dict on auto_register.
+serde_yaml = "0.9"
+
 [dev-dependencies]
 # Tests use both runtimes — codec / peers / dispatcher unit tests don't need
 # a runtime; integration tests at M2 Session 2+ do.
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros"] }
+tempfile = "3"
+serde_yaml = "0.9"

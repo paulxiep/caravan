@@ -1,5 +1,7 @@
 # Python Stack → AWS Mapping
 
+> ⚠️ **HISTORICAL — pre-SDK research notes.** Current SDK contract lives at [`../rpc/python/`](../rpc/python/) (in-tree at 0.1.0). Authoritative docs are [`thesis.md`](thesis.md) and [`development_plan.md`](development_plan.md). Snapshot 2026-05-16; do not assume any specific row is current.
+
 > **Snapshot date: 2026-05-16.** AWS prices reference `aws_service_groups.md`.
 > **Scope**: Python ecosystem only. Other language ecosystems (Go, Java, Ruby) are out of scope for this round; Rust is covered in the parallel `mapping_rust_to_aws.md`.
 > **Framing**: this file is Python ecosystem evidence feeding into `thesis.md` (conceptual home) and `caravan_abstraction_v2.md` (long-form derivation). The Cheapest/Production/Premium tier labels below are the **operator's intuition**; they map onto v2 §6's explicit yaml `tier:` vocabulary (`db.sql tier: dev | prod-small | prod | premium | global`, `bucket class: standard | intelligent | …`, etc.) — that mapping is shown inline per row and rolled up in the closing summary table.

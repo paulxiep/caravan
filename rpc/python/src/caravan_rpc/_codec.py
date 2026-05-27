@@ -28,11 +28,35 @@ import inspect
 import threading
 from typing import Any, get_type_hints
 
-from pydantic import TypeAdapter
+from pydantic import ConfigDict, TypeAdapter
 
 # Cache: (interface_cls, method_name) -> (param_adapters, return_adapter)
 _cache_lock = threading.Lock()
 _cache: dict[tuple[type, str], tuple[dict[str, TypeAdapter], TypeAdapter | None]] = {}
+
+# Shared adapter config: serialize bytes as base64 (default is utf8 which
+# crashes on binary payloads — PDFs, images, anything outside ASCII).
+# Mirrors the Rust SDK's serde_bytes-style encoding. Pydantic rejects
+# applying `config=` on types that own a config (BaseModel, dataclass,
+# TypedDict) — `_build_adapter` falls back to the no-config form for
+# those; bytes-bearing primitives + Optional/list/dict wrappers get the
+# base64 encoding.
+_wire_config = ConfigDict(ser_json_bytes="base64", val_json_bytes="base64")
+
+
+def _build_adapter(hint: Any) -> TypeAdapter:
+    """Build a TypeAdapter for `hint`, applying `_wire_config` when possible.
+
+    Pydantic v2 disallows `config=` on BaseModel / dataclass / TypedDict
+    (those own their config). For everything else — bytes, primitives,
+    Optional, list, dict, unions of the above — the base64 serialization
+    config matters; for owned-config types pydantic already handles their
+    own bytes fields correctly.
+    """
+    try:
+        return TypeAdapter(hint, config=_wire_config)
+    except Exception:  # noqa: BLE001 — pydantic.PydanticUserError per docs
+        return TypeAdapter(hint)
 
 
 def _adapters_for(
@@ -79,11 +103,11 @@ def _adapters_for(
         if name == "self":
             continue
         if name in hints:
-            param_adapters[name] = TypeAdapter(hints[name])
+            param_adapters[name] = _build_adapter(hints[name])
 
     return_adapter: TypeAdapter | None = None
     if "return" in hints and hints["return"] is not type(None):
-        return_adapter = TypeAdapter(hints["return"])
+        return_adapter = _build_adapter(hints["return"])
 
     result = (param_adapters, return_adapter)
     with _cache_lock:
